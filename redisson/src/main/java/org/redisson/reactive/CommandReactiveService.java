@@ -16,11 +16,11 @@
 package org.redisson.reactive;
 
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletionException;
 
 import org.redisson.api.RFuture;
 import org.redisson.command.CommandAsyncService;
 import org.redisson.connection.ConnectionManager;
-
 import org.redisson.liveobject.core.RedissonObjectBuilder;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -52,8 +52,11 @@ public class CommandReactiveService extends CommandAsyncService implements Comma
                     future.cancel(true);
                 });
 
-                future.onComplete((v, e) -> {
+                future.whenComplete((v, e) -> {
                     if (e != null) {
+                        if (e instanceof CompletionException) {
+                            e = e.getCause();
+                        }
                         emitter.error(e);
                         return;
                     }

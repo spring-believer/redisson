@@ -87,7 +87,7 @@ public class RedisCommand<R> {
         if (replayMultiDecoder != null) {
             this.replayMultiDecoder = replayMultiDecoder;
         } else {
-            this.replayMultiDecoder = (parts, state) -> null;
+            this.replayMultiDecoder = (parts, state) -> (R) parts;
         }
     }
 
@@ -105,6 +105,16 @@ public class RedisCommand<R> {
 
     public Convertor<R> getConvertor() {
         return convertor;
+    }
+
+    public boolean isNoRetry() {
+        return RedisCommands.NO_RETRY.contains(getName())
+                || RedisCommands.NO_RETRY_COMMANDS.contains(this);
+    }
+
+    public boolean isBlockingCommand() {
+        return RedisCommands.BLOCKING_COMMAND_NAMES.contains(getName())
+                || RedisCommands.BLOCKING_COMMANDS.contains(this);
     }
 
     public String toString() {

@@ -16,16 +16,13 @@
 package org.redisson.pubsub;
 
 import org.redisson.PubSubEntry;
-import org.redisson.api.RFuture;
 import org.redisson.client.BaseRedisPubSubListener;
 import org.redisson.client.ChannelName;
 import org.redisson.client.RedisPubSubListener;
 import org.redisson.client.codec.LongCodec;
 import org.redisson.client.protocol.pubsub.PubSubType;
-import org.redisson.misc.RPromise;
-import org.redisson.misc.RedissonPromise;
-import org.redisson.misc.TransferListener;
 
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
@@ -48,13 +45,9 @@ abstract class PublishSubscribe<E extends PubSubEntry<E>> {
         AsyncSemaphore semaphore = service.getSemaphore(new ChannelName(channelName));
         semaphore.acquire(() -> {
             if (entry.release() == 0) {
-                // just an assertion
-                boolean removed = entries.remove(entryName) == entry;
-                if (!removed) {
-                    throw new IllegalStateException();
-                }
+                entries.remove(entryName);
                 service.unsubscribe(PubSubType.UNSUBSCRIBE, new ChannelName(channelName))
-                        .onComplete((r, e) -> {
+                        .whenComplete((r, e) -> {
                             semaphore.release();
                         });
             } else {
@@ -64,11 +57,20 @@ abstract class PublishSubscribe<E extends PubSubEntry<E>> {
 
     }
 
-    public RFuture<E> subscribe(String entryName, String channelName) {
+    public void timeout(CompletableFuture<?> promise) {
+        service.timeout(promise);
+    }
+
+    public void timeout(CompletableFuture<?> promise, long timeout) {
+        service.timeout(promise, timeout);
+    }
+
+    public CompletableFuture<E> subscribe(String entryName, String channelName) {
         AsyncSemaphore semaphore = service.getSemaphore(new ChannelName(channelName));
-        RPromise<E> newPromise = new RedissonPromise<>();
+        CompletableFuture<E> newPromise = new CompletableFuture<>();
+
         semaphore.acquire(() -> {
-            if (!newPromise.setUncancellable()) {
+            if (newPromise.isDone()) {
                 semaphore.release();
                 return;
             }
@@ -77,7 +79,13 @@ abstract class PublishSubscribe<E extends PubSubEntry<E>> {
             if (entry != null) {
                 entry.acquire();
                 semaphore.release();
-                entry.getPromise().onComplete(new TransferListener<E>(newPromise));
+                entry.getPromise().whenComplete((r, e) -> {
+                    if (e != null) {
+                        newPromise.completeExceptionally(e);
+                        return;
+                    }
+                    newPromise.complete(r);
+                });
                 return;
             }
 
@@ -88,18 +96,37 @@ abstract class PublishSubscribe<E extends PubSubEntry<E>> {
             if (oldValue != null) {
                 oldValue.acquire();
                 semaphore.release();
-                oldValue.getPromise().onComplete(new TransferListener<E>(newPromise));
+                oldValue.getPromise().whenComplete((r, e) -> {
+                    if (e != null) {
+                        newPromise.completeExceptionally(e);
+                        return;
+                    }
+                    newPromise.complete(r);
+                });
                 return;
             }
 
             RedisPubSubListener<Object> listener = createListener(channelName, value);
-            service.subscribe(LongCodec.INSTANCE, channelName, semaphore, listener);
+            CompletableFuture<PubSubConnectionEntry> s = service.subscribeNoTimeout(LongCodec.INSTANCE, channelName, semaphore, listener);
+            newPromise.whenComplete((r, e) -> {
+                if (e != null) {
+                    s.completeExceptionally(e);
+                }
+            });
+            s.whenComplete((r, e) -> {
+                if (e != null) {
+                    value.getPromise().completeExceptionally(e);
+                    return;
+                }
+                value.getPromise().complete(value);
+            });
+
         });
 
         return newPromise;
     }
 
-    protected abstract E createEntry(RPromise<E> newPromise);
+    protected abstract E createEntry(CompletableFuture<E> newPromise);
 
     protected abstract void onMessage(E value, Long message);
 
@@ -114,20 +141,6 @@ abstract class PublishSubscribe<E extends PubSubEntry<E>> {
 
                 PublishSubscribe.this.onMessage(value, (Long) message);
             }
-
-            @Override
-            public boolean onStatus(PubSubType type, CharSequence channel) {
-                if (!channelName.equals(channel.toString())) {
-                    return false;
-                }
-
-                if (type == PubSubType.SUBSCRIBE) {
-                    value.getPromise().trySuccess(value);
-                    return true;
-                }
-                return false;
-            }
-
         };
         return listener;
     }

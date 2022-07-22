@@ -18,6 +18,7 @@ package org.redisson.api;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.util.Collection;
 import java.util.Set;
 
 /**
@@ -28,6 +29,24 @@ import java.util.Set;
  * @param <V> type of value
  */
 public interface RSetReactive<V> extends RCollectionReactive<V>, RSortableReactive<Set<V>> {
+
+    /**
+     * Adds all elements contained in the specified collection.
+     * Returns number of added elements.
+     *
+     * @param c - collection of elements to add
+     * @return number of added elements
+     */
+    Mono<Integer> addAllCounted(Collection<? extends V> c);
+
+    /**
+     * Removes all elements contained in the specified collection.
+     * Returns number of removed elements.
+     *
+     * @param c - collection of elements to add
+     * @return number of removed elements
+     */
+    Mono<Integer> removeAllCounted(Collection<? extends V> c);
 
     /**
      * Returns <code>RPermitExpirableSemaphore</code> instance associated with <code>value</code>
@@ -189,6 +208,27 @@ public interface RSetReactive<V> extends RCollectionReactive<V>, RSortableReacti
      * @return size of intersection
      */
     Mono<Integer> intersection(String... names);
+
+    /**
+     * Counts elements of set as a result of sets intersection with current set.
+     * <p>
+     * Requires <b>Redis 7.0.0 and higher.</b>
+     *
+     * @param names - name of sets
+     * @return amount of elements
+     */
+    Mono<Integer> countIntersection(String... names);
+
+    /**
+     * Counts elements of set as a result of sets intersection with current set.
+     * <p>
+     * Requires <b>Redis 7.0.0 and higher.</b>
+     *
+     * @param names - name of sets
+     * @param limit - sets intersection limit
+     * @return amount of elements
+     */
+    Mono<Integer> countIntersection(int limit, String... names);
 
     /**
      * Intersection sets specified by name with current set.

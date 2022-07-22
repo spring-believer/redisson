@@ -15,6 +15,7 @@
  */
 package org.redisson.api;
 
+import java.util.Collection;
 import java.util.Set;
 
 /**
@@ -131,6 +132,27 @@ public interface RSetAsync<V> extends RCollectionAsync<V>, RSortableAsync<Set<V>
     RFuture<Set<V>> readIntersectionAsync(String... names);
 
     /**
+     * Counts elements of set as a result of sets intersection with current set.
+     * <p>
+     * Requires <b>Redis 7.0.0 and higher.</b>
+     *
+     * @param names - name of sets
+     * @return amount of elements
+     */
+    RFuture<Integer> countIntersectionAsync(String... names);
+
+    /**
+     * Counts elements of set as a result of sets intersection with current set.
+     * <p>
+     * Requires <b>Redis 7.0.0 and higher.</b>
+     *
+     * @param names - name of sets
+     * @param limit - sets intersection limit
+     * @return amount of elements
+     */
+    RFuture<Integer> countIntersectionAsync(int limit, String... names);
+
+    /**
      * Tries to add elements only if none of them in set.
      *
      * @param values - values to add
@@ -138,5 +160,23 @@ public interface RSetAsync<V> extends RCollectionAsync<V>, RSortableAsync<Set<V>
      *          otherwise <code>false</code>.
      */
     RFuture<Boolean> tryAddAsync(V... values);
+
+    /**
+     * Adds all elements contained in the specified collection.
+     * Returns number of added elements.
+     *
+     * @param c - collection of elements to add
+     * @return number of added elements
+     */
+    RFuture<Integer> addAllCountedAsync(Collection<? extends V> c);
+
+    /**
+     * Removes all elements contained in the specified collection.
+     * Returns number of removed elements.
+     *
+     * @param c - collection of elements to add
+     * @return number of removed elements
+     */
+    RFuture<Integer> removeAllCountedAsync(Collection<? extends V> c);
 
 }

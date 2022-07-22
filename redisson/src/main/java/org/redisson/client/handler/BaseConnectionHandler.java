@@ -15,23 +15,22 @@
  */
 package org.redisson.client.handler;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
 import org.redisson.api.RFuture;
 import org.redisson.client.RedisClient;
 import org.redisson.client.RedisClientConfig;
 import org.redisson.client.RedisConnection;
 import org.redisson.client.RedisLoadingException;
 import org.redisson.client.protocol.RedisCommands;
-import org.redisson.misc.RPromise;
-import org.redisson.misc.RedissonPromise;
 
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelInboundHandlerAdapter;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 
@@ -41,7 +40,7 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 public abstract class BaseConnectionHandler<C extends RedisConnection> extends ChannelInboundHandlerAdapter {
 
     final RedisClient redisClient;
-    final RPromise<C> connectionPromise = new RedissonPromise<C>();
+    final CompletableFuture<C> connectionPromise = new CompletableFuture<C>();
     C connection;
     
     public BaseConnectionHandler(RedisClient redisClient) {
@@ -60,16 +59,18 @@ public abstract class BaseConnectionHandler<C extends RedisConnection> extends C
     abstract C createConnection(ChannelHandlerContext ctx);
     
     @Override
-    public void channelActive(final ChannelHandlerContext ctx) {
-        List<RFuture<Object>> futures = new ArrayList<RFuture<Object>>();
+    public void channelActive(ChannelHandlerContext ctx) {
+        List<RFuture<Object>> futures = new ArrayList<>();
 
         RedisClientConfig config = redisClient.getConfig();
-        if (config.getPassword() != null) {
+        String password = Objects.toString(config.getAddress().getPassword(), config.getPassword());
+        if (password != null) {
             RFuture<Object> future;
-            if (config.getUsername() != null) {
-                future = connection.async(RedisCommands.AUTH, config.getUsername(), config.getPassword());
+            String username = Objects.toString(config.getAddress().getUsername(), config.getUsername());
+            if (username != null) {
+                future = connection.async(RedisCommands.AUTH, username, password);
             } else {
-                future = connection.async(RedisCommands.AUTH, config.getPassword());
+                future = connection.async(RedisCommands.AUTH, password);
             }
             futures.add(future);
         }
@@ -92,14 +93,14 @@ public abstract class BaseConnectionHandler<C extends RedisConnection> extends C
         
         if (futures.isEmpty()) {
             ctx.fireChannelActive();
-            connectionPromise.trySuccess(connection);
+            connectionPromise.complete(connection);
             return;
         }
         
-        final AtomicBoolean retry = new AtomicBoolean();
-        final AtomicInteger commandsCounter = new AtomicInteger(futures.size());
+        AtomicBoolean retry = new AtomicBoolean();
+        AtomicInteger commandsCounter = new AtomicInteger(futures.size());
         for (RFuture<Object> future : futures) {
-            future.onComplete((res, e) -> {
+            future.whenComplete((res, e) -> {
                 if (e != null) {
                     if (e instanceof RedisLoadingException) {
                         if (retry.compareAndSet(false, true)) {
@@ -110,12 +111,12 @@ public abstract class BaseConnectionHandler<C extends RedisConnection> extends C
                         return;
                     }
                     connection.closeAsync();
-                    connectionPromise.tryFailure(e);
+                    connectionPromise.completeExceptionally(e);
                     return;
                 }
                 if (commandsCounter.decrementAndGet() == 0) {
                     ctx.fireChannelActive();
-                    connectionPromise.trySuccess(connection);
+                    connectionPromise.complete(connection);
                 }
             });
         }

@@ -2,7 +2,7 @@
 
 Integrates Redisson with [Helidon](https://helidon.io/) framework.  
 
-Supports Helidon 1.4.x - 2.3.x  
+Supports Helidon 1.4.x - 2.4.x  
 
 ## Usage  
 
@@ -14,14 +14,14 @@ Maven
 <dependency>
     <groupId>org.redisson</groupId>
     <artifactId>redisson-helidon</artifactId>
-    <version>3.16.0</version>
+    <version>3.17.4</version>
 </dependency>
 ```
 
 Gradle
 
 ```groovy
-compile 'org.redisson:redisson-helidon:3.16.0'
+compile 'org.redisson:redisson-helidon:3.17.4'
 ```
 
 ### 2. Add settings into `META-INF/microprofile-config.properties` file
@@ -51,4 +51,4 @@ private RedissonClient redisson;
 
 For injection without @Named annotation use instance name - `default`. 
 
-Consider __[Redisson PRO](https://redisson.pro)__ version for **ultra-fast performance** and **support by SLA**.
+Try __[Redisson PRO](https://redisson.pro)__ with **ultra-fast performance** and **support by SLA**.

@@ -74,14 +74,21 @@ public class RedissonListReactive<V> {
                 emitter.onRequest(new LongConsumer() {
                     
                     int currentIndex = startIndex;
+                    volatile boolean maxAccepted;
                     
                     @Override
                     public void accept(long value) {
+                        if (Long.MAX_VALUE == value) {
+                            maxAccepted = true;
+                        }
+                        if (maxAccepted && value != Long.MAX_VALUE) {
+                            return;
+                        }
                         onRequest(forward, emitter, value);
                     }
                     
-                    protected void onRequest(boolean forward, FluxSink<V> emitter, long n) {
-                        instance.getAsync(currentIndex).onComplete((value, e) -> {
+                    private void onRequest(boolean forward, FluxSink<V> emitter, long n) {
+                        instance.getAsync(currentIndex).whenComplete((value, e) -> {
                                 if (e != null) {
                                     emitter.error(e);
                                     return;

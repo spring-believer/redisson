@@ -31,9 +31,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 
 /**
  * 
@@ -121,15 +119,13 @@ public class RedisNodes<N extends Node> implements NodesGroup<N> {
         Map<RedisConnection, RFuture<String>> result = new ConcurrentHashMap<>(clients.size());
         CountDownLatch latch = new CountDownLatch(clients.size());
         for (RedisClientEntry entry : clients) {
-            RFuture<RedisConnection> f = entry.getClient().connectAsync();
-            f.onComplete((c, e) -> {
+            CompletionStage<RedisConnection> f = entry.getClient().connectAsync();
+            f.whenComplete((c, e) -> {
                 if (c != null) {
                     RFuture<String> r = c.async(timeUnit.toMillis(timeout), RedisCommands.PING);
                     result.put(c, r);
-                    latch.countDown();
-                } else {
-                    latch.countDown();
                 }
+                latch.countDown();
             });
         }
 
@@ -151,8 +147,12 @@ public class RedisNodes<N extends Node> implements NodesGroup<N> {
         boolean res = true;
         for (Entry<RedisConnection, RFuture<String>> entry : result.entrySet()) {
             RFuture<String> f = entry.getValue();
-            f.awaitUninterruptibly();
-            String pong = f.getNow();
+            String pong = null;
+            try {
+                pong = f.toCompletableFuture().join();
+            } catch (Exception e) {
+                // skip
+            }
             entry.getKey().closeAsync();
             if (!"PONG".equals(pong)) {
                 res = false;

@@ -27,12 +27,15 @@ import org.redisson.client.protocol.RedisCommand;
 import org.redisson.client.protocol.RedisCommands;
 import org.redisson.client.protocol.Time;
 import org.redisson.command.CommandAsyncExecutor;
-import org.redisson.misc.RPromise;
-import org.redisson.misc.RedissonPromise;
+import org.redisson.misc.CompletableFutureWrapper;
+import org.redisson.misc.RedisURI;
 
 import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -62,7 +65,7 @@ public class SentinelRedisNode implements RedisSentinel, RedisSentinelAsync {
 
     @Override
     public Map<String, String> getMemoryStatistics() {
-        return getMemoryStatisticsAsync().syncUninterruptibly().getNow();
+        return getMemoryStatisticsAsync().toCompletableFuture().join();
     }
 
     @Override
@@ -82,12 +85,12 @@ public class SentinelRedisNode implements RedisSentinel, RedisSentinelAsync {
 
     @Override
     public boolean ping() {
-        return pingAsync().syncUninterruptibly().getNow();
+        return pingAsync().toCompletableFuture().join();
     }
 
     @Override
     public boolean ping(long timeout, TimeUnit timeUnit) {
-        return pingAsync(timeout, timeUnit).syncUninterruptibly().getNow();
+        return pingAsync(timeout, timeUnit).toCompletableFuture().join();
     }
 
     @Override
@@ -117,35 +120,24 @@ public class SentinelRedisNode implements RedisSentinel, RedisSentinelAsync {
     }
 
     private <T> RFuture<T> executeAsync(T defaultValue, Codec codec, long timeout, RedisCommand<T> command, Object... params) {
-        RPromise<T> result = new RedissonPromise<>();
-        RFuture<RedisConnection> connectionFuture = client.connectAsync();
-        connectionFuture.onComplete((connection, ex) -> {
-            if (ex != null) {
-                if (defaultValue != null) {
-                    result.trySuccess(defaultValue);
-                } else {
-                    result.tryFailure(ex);
-                }
-                return;
+        CompletableFuture<RedisConnection> connectionFuture = client.connectAsync().toCompletableFuture();
+        CompletableFuture<Object> f = connectionFuture.thenCompose(connection -> {
+            return connection.async(timeout, codec, command, params);
+        }).handle((r, e) -> {
+            if (connectionFuture.isDone() && !connectionFuture.isCompletedExceptionally()) {
+                connectionFuture.getNow(null).closeAsync();
             }
 
-            RFuture<T> future = connection.async(timeout, codec, command, params);
-            future.onComplete((r, e) -> {
-                connection.closeAsync();
-
-                if (e != null) {
-                    if (defaultValue != null) {
-                        result.trySuccess(defaultValue);
-                    } else {
-                        result.tryFailure(e);
-                    }
-                    return;
+            if (e != null) {
+                if (defaultValue != null) {
+                    return defaultValue;
                 }
+                throw new CompletionException(e);
+            }
 
-                result.trySuccess(r);
-            });
+            return r;
         });
-        return result;
+        return new CompletableFutureWrapper<T>((CompletionStage<T>) f);
     }
 
     @Override
@@ -155,7 +147,7 @@ public class SentinelRedisNode implements RedisSentinel, RedisSentinelAsync {
 
     @Override
     public Time time() {
-        return timeAsync().syncUninterruptibly().getNow();
+        return timeAsync().toCompletableFuture().join();
     }
 
     @Override
@@ -165,7 +157,7 @@ public class SentinelRedisNode implements RedisSentinel, RedisSentinelAsync {
 
     @Override
     public Map<String, String> info(InfoSection section) {
-        return infoAsync(section).syncUninterruptibly().getNow();
+        return infoAsync(section).toCompletableFuture().join();
     }
 
     @Override
@@ -199,7 +191,7 @@ public class SentinelRedisNode implements RedisSentinel, RedisSentinelAsync {
     }
 
     @Override
-    public InetSocketAddress getMasterAddr(String masterName) {
+    public RedisURI getMasterAddr(String masterName) {
         return commandAsyncService.get(getMasterAddrAsync(masterName));
     }
 
@@ -229,7 +221,7 @@ public class SentinelRedisNode implements RedisSentinel, RedisSentinelAsync {
     }
 
     @Override
-    public RFuture<InetSocketAddress> getMasterAddrAsync(String masterName) {
+    public RFuture<RedisURI> getMasterAddrAsync(String masterName) {
         return executeAsync(null, StringCodec.INSTANCE, -1, RedisCommands.SENTINEL_GET_MASTER_ADDR_BY_NAME, masterName);
     }
 
@@ -260,12 +252,12 @@ public class SentinelRedisNode implements RedisSentinel, RedisSentinelAsync {
 
     @Override
     public Map<String, String> getConfig(String parameter) {
-        return getConfigAsync(parameter).syncUninterruptibly().getNow();
+        return getConfigAsync(parameter).toCompletableFuture().join();
     }
 
     @Override
     public void setConfig(String parameter, String value) {
-        setConfigAsync(parameter, value).syncUninterruptibly().getNow();
+        setConfigAsync(parameter, value).toCompletableFuture().join();
     }
 
     @Override

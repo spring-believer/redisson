@@ -1,24 +1,58 @@
 package org.redisson;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
-import java.time.Duration;
-import java.util.Queue;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
-
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.redisson.api.RRateLimiter;
+import org.redisson.api.RScoredSortedSet;
 import org.redisson.api.RateIntervalUnit;
 import org.redisson.api.RateType;
 
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Queue;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
 public class RedissonRateLimiterTest extends BaseTest {
+
+    @Test
+    public void testExpire2() throws InterruptedException {
+        RRateLimiter rateLimiter = redisson.getRateLimiter("test1");
+        rateLimiter.trySetRate(RateType.OVERALL, 5, 5, RateIntervalUnit.SECONDS);
+        rateLimiter.expire(Duration.ofSeconds(10));
+        rateLimiter.acquire();
+        Thread.sleep(12000);
+        assertThat(redisson.getKeys().count()).isZero();
+    }
+
+    @Test
+    public void testRateValue() throws InterruptedException {
+        RRateLimiter rateLimiter = redisson.getRateLimiter("test1");
+        int rate = 10_000;
+        rateLimiter.setRate(RateType.OVERALL, rate, 10_000, RateIntervalUnit.MILLISECONDS);
+
+        ExecutorService e = Executors.newFixedThreadPool(200);
+        for (int i = 0; i < 200; i++) {
+            e.execute(() -> {
+                while (true) {
+                    rateLimiter.acquire();
+                }
+            });
+        }
+
+        RScoredSortedSet<Object> sortedSet = redisson.getScoredSortedSet("{test1}:permits");
+        List<Integer> sizes = new ArrayList<>();
+        for (int i = 0; i < 20; i++) {
+            sizes.add(sortedSet.size());
+            Thread.sleep(1000);
+        }
+
+        assertThat(sizes.stream().filter(s -> s == rate).count()).isGreaterThan(16);
+        e.shutdownNow();
+    }
 
     @Test
     public void testExpire() throws InterruptedException {
@@ -26,7 +60,7 @@ public class RedissonRateLimiterTest extends BaseTest {
         rr.trySetRate(RateType.OVERALL, 2, 5, RateIntervalUnit.SECONDS);
         rr.tryAcquire();
 
-        rr.expire(1, TimeUnit.SECONDS);
+        rr.expire(Duration.ofSeconds(1));
         Thread.sleep(1100);
         assertThat(redisson.getKeys().count()).isZero();
     }
@@ -182,6 +216,56 @@ public class RedissonRateLimiterTest extends BaseTest {
         boolean deleted = rateLimiter.delete();
         assertThat(redisson.getKeys().count()).isEqualTo(0);
         assertThat(deleted).isTrue();
+    }
+
+    @Test
+    public void testConcurrency2() throws InterruptedException {
+        RRateLimiter rr = redisson.getRateLimiter("test");
+        rr.trySetRate(RateType.OVERALL, 18, 1, RateIntervalUnit.SECONDS);
+
+        Queue<Long> queue = new ConcurrentLinkedQueue<Long>();
+        AtomicLong counter = new AtomicLong();
+        ExecutorService pool = Executors.newFixedThreadPool(8);
+        for (int i = 0; i < 8; i++) {
+            pool.execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        while (true) {
+                            rr.acquire();
+                            queue.add(System.currentTimeMillis());
+                            if (counter.incrementAndGet() > 1000) {
+                                break;
+                            }
+                        }
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
+                }
+            });
+        }
+
+        pool.shutdown();
+        assertThat(pool.awaitTermination(2, TimeUnit.MINUTES)).isTrue();
+
+        int count = 0;
+        long start = 0;
+        boolean skip = true;
+        for (Long value : queue) {
+            if (start == 0) {
+                start = value;
+            }
+            count++;
+            if (value - start >= 1000) {
+                if (!skip) {
+                    assertThat(count).isLessThanOrEqualTo(18);
+                } else {
+                    skip = false;
+                }
+                start = 0;
+                count = 0;
+            }
+        }
     }
 
     @Test

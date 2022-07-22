@@ -16,6 +16,7 @@
 package org.redisson.api;
 
 import org.redisson.client.codec.Codec;
+import org.redisson.codec.JsonCodec;
 import org.redisson.config.Config;
 
 /**
@@ -187,17 +188,23 @@ public interface RedissonRxClient {
      * @return Lock object
      */
     RLockRx getSpinLock(String name, LockOptions.BackOff backOff);
-    
+
     /**
      * Returns MultiLock instance associated with specified <code>locks</code>
-     * 
+     *
      * @param locks - collection of locks
      * @return MultiLock object
      */
-    RLockRx getMultiLock(RLock... locks);
-    
+    RLockRx getMultiLock(RLockRx... locks);
+
     /*
-     * Use getLock method instead. Returned instance uses Redis Slave synchronization
+     * Use getMultiLock(RLockReactive) method instead
+     */
+    @Deprecated
+    RLockRx getMultiLock(RLock... locks);
+
+    /*
+     * Use getMultiLock method instead. Returned instance uses Redis Slave synchronization
      */
     @Deprecated
     RLockRx getRedLock(RLock... locks);
@@ -328,6 +335,16 @@ public interface RedissonRxClient {
      * @return Buckets
      */
     RBucketsRx getBuckets(Codec codec);
+
+    /**
+     * Returns JSON data holder instance by name using provided codec.
+     *
+     * @param <V> type of value
+     * @param name name of object
+     * @param codec codec for values
+     * @return JsonBucket object
+     */
+    <V> RJsonBucketRx<V> getJsonBucket(String name, JsonCodec<V> codec);
 
     /**
      * Returns HyperLogLog instance by name.
@@ -568,6 +585,29 @@ public interface RedissonRxClient {
      * @return LexSortedSet object
      */
     RLexSortedSetRx getLexSortedSet(String name);
+
+    /**
+     * Returns Sharded Topic instance by name.
+     * <p>
+     * Messages are delivered to message listeners connected to the same Topic.
+     * <p>
+     *
+     * @param name - name of object
+     * @return Topic object
+     */
+    RShardedTopicRx getShardedTopic(String name);
+
+    /**
+     * Returns Sharded Topic instance by name using provided codec for messages.
+     * <p>
+     * Messages are delivered to message listeners connected to the same Topic.
+     * <p>
+     *
+     * @param name - name of object
+     * @param codec - codec for message
+     * @return Topic object
+     */
+    RShardedTopicRx getShardedTopic(String name, Codec codec);
 
     /**
      * Returns topic instance by name.
@@ -819,6 +859,21 @@ public interface RedissonRxClient {
      * @return BitSet object
      */
     RBitSetRx getBitSet(String name);
+
+    /**
+     * Returns interface for Redis Function feature
+     *
+     * @return function object
+     */
+    RFunctionRx getFunction();
+
+    /**
+     * Returns interface for Redis Function feature using provided codec
+     *
+     * @param codec - codec for params and result
+     * @return function interface
+     */
+    RFunctionRx getFunction(Codec codec);
 
     /**
      * Returns script operations object

@@ -18,6 +18,7 @@ package org.redisson;
 import org.redisson.api.*;
 import org.redisson.api.redisnode.*;
 import org.redisson.client.codec.Codec;
+import org.redisson.codec.JsonCodec;
 import org.redisson.command.CommandAsyncExecutor;
 import org.redisson.command.CommandSyncService;
 import org.redisson.config.Config;
@@ -215,6 +216,11 @@ public class Redisson implements RedissonClient {
     }
 
     @Override
+    public <V> RJsonBucket<V> getJsonBucket(String name, JsonCodec<V> codec) {
+        return new RedissonJsonBucket<>(codec, commandExecutor, name);
+    }
+
+    @Override
     public <V> RHyperLogLog<V> getHyperLogLog(String name) {
         return new RedissonHyperLogLog<V>(commandExecutor, name);
     }
@@ -382,6 +388,16 @@ public class Redisson implements RedissonClient {
     }
 
     @Override
+    public RFunction getFunction() {
+        return new RedissonFuction(commandExecutor);
+    }
+
+    @Override
+    public RFunction getFunction(Codec codec) {
+        return new RedissonFuction(commandExecutor, codec);
+    }
+
+    @Override
     public RScript getScript() {
         return new RedissonScript(commandExecutor);
     }
@@ -458,6 +474,16 @@ public class Redisson implements RedissonClient {
     @Override
     public RLexSortedSet getLexSortedSet(String name) {
         return new RedissonLexSortedSet(commandExecutor, name, this);
+    }
+
+    @Override
+    public RShardedTopic getShardedTopic(String name) {
+        return new RedissonShardedTopic(commandExecutor, name);
+    }
+
+    @Override
+    public RShardedTopic getShardedTopic(String name, Codec codec) {
+        return new RedissonShardedTopic(codec, commandExecutor, name);
     }
 
     @Override
@@ -654,12 +680,14 @@ public class Redisson implements RedissonClient {
 
     @Override
     public void shutdown() {
+        writeBehindService.stop();
         connectionManager.shutdown();
     }
 
 
     @Override
     public void shutdown(long quietPeriod, long timeout, TimeUnit unit) {
+        writeBehindService.stop();
         connectionManager.shutdown(quietPeriod, timeout, unit);
     }
 

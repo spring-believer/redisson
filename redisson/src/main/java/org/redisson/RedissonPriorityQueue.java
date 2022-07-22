@@ -21,14 +21,14 @@ import org.redisson.client.codec.StringCodec;
 import org.redisson.client.protocol.RedisCommand;
 import org.redisson.client.protocol.RedisCommands;
 import org.redisson.command.CommandAsyncExecutor;
-import org.redisson.misc.RPromise;
-import org.redisson.misc.RedissonPromise;
+import org.redisson.misc.CompletableFutureWrapper;
 
 import java.io.ByteArrayOutputStream;
 import java.io.ObjectOutputStream;
 import java.math.BigInteger;
 import java.security.MessageDigest;
 import java.util.*;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
@@ -161,7 +161,7 @@ public class RedissonPriorityQueue<V> extends RedissonList<V> implements RPriori
                 index = res.getIndex() + 1;
             }
                 
-            commandExecutor.evalWriteAsync(getRawName(), codec, RedisCommands.EVAL_VOID,
+            get(commandExecutor.evalWriteNoRetryAsync(getRawName(), codec, RedisCommands.EVAL_VOID,
                "local len = redis.call('llen', KEYS[1]);"
                 + "if tonumber(ARGV[1]) < len then "
                     + "local pivot = redis.call('lindex', KEYS[1], ARGV[1]);"
@@ -169,8 +169,8 @@ public class RedissonPriorityQueue<V> extends RedissonList<V> implements RPriori
                     + "return;"
                 + "end;"
                 + "redis.call('rpush', KEYS[1], ARGV[2]);", 
-                    Arrays.<Object>asList(getRawName()),
-                    index, encode(value));
+                    Arrays.asList(getRawName()),
+                    index, encode(value)));
             return true;
         } finally {
             lock.unlock();
@@ -272,35 +272,17 @@ public class RedissonPriorityQueue<V> extends RedissonList<V> implements RPriori
         return wrapLockedAsync(() -> {
             return commandExecutor.writeAsync(getRawName(), codec, command, params);
         });
-    };
+    }
 
     protected final <T, R> RFuture<R> wrapLockedAsync(Supplier<RFuture<R>> callable) {
         long threadId = Thread.currentThread().getId();
-        RPromise<R> result = new RedissonPromise<R>();
-        lock.lockAsync(threadId).onComplete((r, exc) -> {
-            if (exc != null) {
-                result.tryFailure(exc);
-                return;
-            }
-
-            RFuture<R> f = callable.get();
-            f.onComplete((value, e) -> {
-                if (e != null) {
-                    result.tryFailure(e);
-                    return;
-                }
-                
-                lock.unlockAsync(threadId).onComplete((res, ex) -> {
-                    if (ex != null) {
-                        result.tryFailure(ex);
-                        return;
-                    }
-                    
-                    result.trySuccess(value);
-                });
+        CompletionStage<R> f = lock.lockAsync(threadId).thenCompose(r -> {
+            RFuture<R> callback = callable.get();
+            return callback.thenCompose(value -> {
+                return lock.unlockAsync(threadId).thenApply(res -> value);
             });
         });
-        return result;
+        return new CompletableFutureWrapper<>(f);
     }
 
     public V getFirst() {
@@ -424,13 +406,13 @@ public class RedissonPriorityQueue<V> extends RedissonList<V> implements RPriori
     }
 
     @Override
-    public RFuture<Boolean> expireAsync(long timeToLive, TimeUnit timeUnit) {
-        return expireAsync(timeToLive, timeUnit, getRawName(), getComparatorKeyName());
+    public RFuture<Boolean> expireAsync(long timeToLive, TimeUnit timeUnit, String param, String... keys) {
+        return super.expireAsync(timeToLive, timeUnit, param, getRawName(), getComparatorKeyName());
     }
 
     @Override
-    protected RFuture<Boolean> expireAtAsync(long timestamp, String... keys) {
-        return super.expireAtAsync(timestamp, getRawName(), getComparatorKeyName());
+    protected RFuture<Boolean> expireAtAsync(long timestamp, String param, String... keys) {
+        return super.expireAtAsync(timestamp, param, getRawName(), getComparatorKeyName());
     }
 
     @Override
@@ -456,7 +438,7 @@ public class RedissonPriorityQueue<V> extends RedissonList<V> implements RPriori
     @Override
     public RFuture<List<V>> pollAsync(int limit) {
         return wrapLockedAsync(() -> {
-            return commandExecutor.evalWriteAsync(getRawName(), codec, RedisCommands.EVAL_LIST,
+            return commandExecutor.evalWriteNoRetryAsync(getRawName(), codec, RedisCommands.EVAL_LIST,
                        "local result = {};"
                      + "for i = 1, ARGV[1], 1 do " +
                            "local value = redis.call('lpop', KEYS[1]);" +

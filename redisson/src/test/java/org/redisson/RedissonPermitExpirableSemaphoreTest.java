@@ -2,12 +2,15 @@ package org.redisson;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.redisson.api.RFuture;
 import org.redisson.api.RPermitExpirableSemaphore;
 import org.redisson.client.RedisException;
 
@@ -17,7 +20,7 @@ public class RedissonPermitExpirableSemaphoreTest extends BaseConcurrentTest {
     public void testUpdateLeaseTime() throws InterruptedException {
         RPermitExpirableSemaphore semaphore = redisson.getPermitExpirableSemaphore("test");
         semaphore.trySetPermits(1);
-        assertThat(semaphore.updateLeaseTime("123", 1, TimeUnit.SECONDS)).isFalse();
+        assertThat(semaphore.updateLeaseTime("1234", 1, TimeUnit.SECONDS)).isFalse();
         String id = semaphore.acquire();
         assertThat(semaphore.updateLeaseTime(id, 1, TimeUnit.SECONDS)).isTrue();
         Thread.sleep(1200);
@@ -60,7 +63,7 @@ public class RedissonPermitExpirableSemaphoreTest extends BaseConcurrentTest {
     public void testExpiration() throws InterruptedException {
         RPermitExpirableSemaphore semaphore = redisson.getPermitExpirableSemaphore("some-key");
         semaphore.trySetPermits(1);
-        semaphore.expire(3, TimeUnit.SECONDS);
+        semaphore.expire(Duration.ofSeconds(3));
         semaphore.tryAcquire(1, 1, TimeUnit.SECONDS);
         Thread.sleep(4100);
         assertThat(redisson.getKeys().count()).isZero();
@@ -221,6 +224,16 @@ public class RedissonPermitExpirableSemaphoreTest extends BaseConcurrentTest {
     }
 
     @Test
+    public void testReleaseExpired() throws InterruptedException {
+        RPermitExpirableSemaphore s = redisson.getPermitExpirableSemaphore("test");
+        s.trySetPermits(1);
+        String permitId = s.tryAcquire(100, 100, TimeUnit.MILLISECONDS);
+        Thread.sleep(200);
+        boolean released = s.tryRelease(permitId);
+        assertThat(released).isFalse();
+    }
+
+    @Test
     public void testConcurrency_SingleInstance() throws InterruptedException {
         final AtomicInteger lockedCounter = new AtomicInteger();
 
@@ -272,6 +285,16 @@ public class RedissonPermitExpirableSemaphoreTest extends BaseConcurrentTest {
         });
 
         assertThat(lockedCounter.get()).isEqualTo(16 * iterations);
+    }
+
+    @Test
+    public void test1() throws InterruptedException {
+        RPermitExpirableSemaphore semaphore = redisson.getPermitExpirableSemaphore("test.sync_semaphore");
+        semaphore.trySetPermits(1);
+        Awaitility.await().atMost(Duration.ofMillis(100)).pollDelay(Duration.ofMillis(10)).untilAsserted(() -> {
+            RFuture<String> permit = semaphore.acquireAsync(5000L, TimeUnit.MILLISECONDS);
+            assertThat(permit.get()).isNotNull();
+        });
     }
 
 }

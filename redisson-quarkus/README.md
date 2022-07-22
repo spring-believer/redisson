@@ -2,11 +2,10 @@
 
 Integrates Redisson with [Quarkus](https://quarkus.io/) framework.  
 
-Supports Quarkus 1.6.x - 2.0.x  
-
-## Native image with RemoteService
-
-To use RemoteService in native image add **dynamic-proxy.json** and **reflection-config.json** files in `quarkus.native.additional-build-args` setting.
+<details>
+    <summary><b>Native image with RemoteService</b>. Click to expand!</summary>
+<br/>
+To use RemoteService in native image add <b>dynamic-proxy.json</b> and <b>reflection-config.json</b> files in `quarkus.native.additional-build-args` setting.
 
 ```
 -H:DynamicProxyConfigurationResources=dynamic-proxy.json,-H:ReflectionConfigurationFiles=reflection-config.json
@@ -27,7 +26,8 @@ reflection-config.json:
      "allDeclaredMethods":true
    }
 ]
-```
+``` 
+</details>
 
 ## Usage  
 
@@ -40,9 +40,9 @@ Maven
     <groupId>org.redisson</groupId>
     <!-- for Quarkus v1.6.x - v1.13.x -->
     <artifactId>redisson-quarkus-16</artifactId>
-    <!-- for Quarkus v2.0.x -->
+    <!-- for Quarkus v2.x.x -->
     <artifactId>redisson-quarkus-20</artifactId>
-    <version>3.16.0</version>
+    <version>3.17.4</version>
 </dependency>
 ```
 
@@ -50,13 +50,13 @@ Gradle
 
 ```groovy
 // for Quarkus v1.6.x - v1.13.x
-compile 'org.redisson:redisson-quarkus-16:3.16.0'
-// for Quarkus v2.0.x
-compile 'org.redisson:redisson-quarkus-20:3.16.0'
+compile 'org.redisson:redisson-quarkus-16:3.17.4'
+// for Quarkus v2.x.x
+compile 'org.redisson:redisson-quarkus-20:3.17.4'
 ```
 
 ### 2. Add settings into `application.properties` file
-
+  
 Config structure is a flat Redisson YAML configuration - 
 [single mode](https://github.com/redisson/redisson/wiki/2.-Configuration#262-single-instance-yaml-config-format),
 [replicated mode](https://github.com/redisson/redisson/wiki/2.-Configuration#252-replicated-yaml-config-format),
@@ -74,6 +74,8 @@ quarkus.redisson.threads=16
 quarkus.redisson.netty-threads=32
 ```
 
+Use `quarkus.redisson.file` setting to specify path to config file.    
+    
 ### 3. Use Redisson
 
 ```java
@@ -81,4 +83,4 @@ quarkus.redisson.netty-threads=32
 RedissonClient redisson;
 ```
 
-Consider __[Redisson PRO](https://redisson.pro)__ version for **ultra-fast performance** and **support by SLA**.
+Try __[Redisson PRO](https://redisson.pro)__ with **ultra-fast performance** and **support by SLA**.

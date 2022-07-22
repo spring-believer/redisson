@@ -6,7 +6,7 @@
 [Quick start](https://github.com/redisson/redisson#quick-start) | [Documentation](https://github.com/redisson/redisson/wiki/Table-of-Content) | [Changelog](https://github.com/redisson/redisson/blob/master/CHANGELOG.md) | [Code examples](https://github.com/redisson/redisson-examples) | [FAQs](https://github.com/redisson/redisson/wiki/16.-FAQ) | [Report an issue](https://github.com/redisson/redisson/issues/new)
 
 Based on high-performance async and lock-free Java Redis client and [Netty](http://netty.io) framework.  
-JDK compatibility:  1.8 - 16, Android  
+JDK compatibility:  1.8 - 18, Android  
 
 ## Features
 
@@ -16,6 +16,7 @@ JDK compatibility:  1.8 - 16, Android
 * Redis with Master with Slave only  
 * Redis single (including support of [Azure Redis Cache](https://azure.microsoft.com/en-us/services/cache/) and [Google Cloud Memorystore for Redis](https://cloud.google.com/memorystore/docs/redis/))  
 * Thread-safe implementation  
+* [JSON datatype](https://github.com/redisson/redisson/wiki/6.-distributed-objects/#615-json-object-holder)
 * [Reactive Streams](https://github.com/redisson/redisson/wiki/3.-operations-execution#32-reactive-way) API  
 * [RxJava3](https://github.com/redisson/redisson/wiki/3.-operations-execution#32-reactive-way) API  
 * [Asynchronous](https://github.com/redisson/redisson/wiki/3.-operations-execution#31-async-way) API  
@@ -104,14 +105,14 @@ Used by
     <dependency>
        <groupId>org.redisson</groupId>
        <artifactId>redisson</artifactId>
-       <version>3.16.0</version>
+       <version>3.17.4</version>
     </dependency>  
 
 #### Gradle
-    compile 'org.redisson:redisson:3.16.0'  
+    compile 'org.redisson:redisson:3.17.4'  
 
 #### SBT
-    libraryDependencies += "org.redisson" % "redisson" % "3.16.0"
+    libraryDependencies += "org.redisson" % "redisson" % "3.17.4"
 
 #### Java
 
@@ -165,12 +166,12 @@ RExecutorService executor = redisson.getExecutorService("myExecutorService");
 
 ```
 
-Consider __[Redisson PRO](https://redisson.pro)__ version for **ultra-fast performance** and **support by SLA**.
+Try __[Redisson PRO](https://redisson.pro)__ with **ultra-fast performance** and **support by SLA**.
 
 ## Downloads
    
-[Redisson 3.16.0](https://repository.sonatype.org/service/local/artifact/maven/redirect?r=central-proxy&g=org.redisson&a=redisson&v=3.16.0&e=jar),
-[Redisson node 3.16.0](https://repository.sonatype.org/service/local/artifact/maven/redirect?r=central-proxy&g=org.redisson&a=redisson-all&v=3.16.0&e=jar)  
+[Redisson 3.17.4](https://repository.sonatype.org/service/local/artifact/maven/redirect?r=central-proxy&g=org.redisson&a=redisson&v=3.17.4&e=jar),
+[Redisson node 3.17.4](https://repository.sonatype.org/service/local/artifact/maven/redirect?r=central-proxy&g=org.redisson&a=redisson-all&v=3.17.4&e=jar)  
 
 ## FAQs
 

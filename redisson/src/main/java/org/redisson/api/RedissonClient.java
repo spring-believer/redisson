@@ -18,6 +18,7 @@ package org.redisson.api;
 import org.redisson.api.redisnode.BaseRedisNodes;
 import org.redisson.api.redisnode.RedisNodes;
 import org.redisson.client.codec.Codec;
+import org.redisson.codec.JsonCodec;
 import org.redisson.config.Config;
 
 import java.util.concurrent.TimeUnit;
@@ -234,6 +235,16 @@ public interface RedissonClient {
      * @return Buckets
      */
     RBuckets getBuckets(Codec codec);
+
+    /**
+     * Returns JSON data holder instance by name using provided codec.
+     *
+     * @param <V> type of value
+     * @param name name of object
+     * @param codec codec for values
+     * @return JsonBucket object
+     */
+    <V> RJsonBucket<V> getJsonBucket(String name, JsonCodec<V> codec);
 
     /**
      * Returns HyperLogLog instance by name.
@@ -610,9 +621,32 @@ public interface RedissonClient {
     RLexSortedSet getLexSortedSet(String name);
 
     /**
+     * Returns Sharded Topic instance by name.
+     * <p>
+     * Messages are delivered to message listeners connected to the same Topic.
+     * <p>
+     *
+     * @param name - name of object
+     * @return Topic object
+     */
+    RShardedTopic getShardedTopic(String name);
+
+    /**
+     * Returns Sharded Topic instance by name using provided codec for messages.
+     * <p>
+     * Messages are delivered to message listeners connected to the same Topic.
+     * <p>
+     *
+     * @param name - name of object
+     * @param codec - codec for message
+     * @return Topic object
+     */
+    RShardedTopic getShardedTopic(String name, Codec codec);
+
+    /**
      * Returns topic instance by name.
      * <p>
-     * Messages are delivered to all listeners attached to the same Redis setup.
+     * Messages are delivered to message listeners connected to the same Topic.
      * <p>
      *
      * @param name - name of object
@@ -624,7 +658,7 @@ public interface RedissonClient {
      * Returns topic instance by name
      * using provided codec for messages.
      * <p>
-     * Messages are delivered to all listeners attached to the same Redis setup.
+     * Messages are delivered to message listeners connected to the same Topic.
      * <p>
      *
      * @param name - name of object
@@ -1003,6 +1037,21 @@ public interface RedissonClient {
      * @return IdGenerator object
      */
     RIdGenerator getIdGenerator(String name);
+
+    /**
+     * Returns interface for Redis Function feature
+     *
+     * @return function object
+     */
+    RFunction getFunction();
+
+    /**
+     * Returns interface for Redis Function feature using provided codec
+     *
+     * @param codec - codec for params and result
+     * @return function interface
+     */
+    RFunction getFunction(Codec codec);
 
     /**
      * Returns script operations object

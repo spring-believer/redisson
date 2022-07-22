@@ -16,23 +16,21 @@
 package org.redisson.connection;
 
 import org.redisson.api.NodeType;
-import org.redisson.api.RFuture;
 import org.redisson.client.RedisClient;
 import org.redisson.client.RedisConnection;
 import org.redisson.client.RedisPubSubConnection;
 import org.redisson.client.protocol.RedisCommand;
-import org.redisson.client.protocol.RedisCommands;
 import org.redisson.config.ReadMode;
 import org.redisson.pubsub.AsyncSemaphore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Deque;
-import java.util.Iterator;
 import java.util.Queue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -51,7 +49,6 @@ public class ClientConnectionsEntry {
     private final Queue<RedisConnection> allConnections = new ConcurrentLinkedQueue<>();
     private final Deque<RedisConnection> freeConnections = new ConcurrentLinkedDeque<>();
     private final AsyncSemaphore freeConnectionsCounter;
-    private volatile Iterator<RedisConnection> iter;
 
     public enum FreezeReason {MANAGER, RECONNECT, SYSTEM}
 
@@ -83,8 +80,6 @@ public class ClientConnectionsEntry {
                 freeConnections.remove(c);
                 return allConnections.remove(c);
             });
-
-        iter = freeConnections.iterator();
     }
     
     public boolean isMasterForRead() {
@@ -124,9 +119,9 @@ public class ClientConnectionsEntry {
         firstFailTime.compareAndSet(0, System.currentTimeMillis());
     }
 
-    public RFuture<Void> shutdownAsync() {
+    public CompletableFuture<Void> shutdownAsync() {
         connectionManager.getConnectionWatcher().remove(this);
-        return client.shutdownAsync();
+        return client.shutdownAsync().toCompletableFuture();
     }
 
     public RedisClient getClient() {
@@ -153,79 +148,29 @@ public class ClientConnectionsEntry {
         freeSubscribeConnectionsCounter.removeListeners();
     }
 
-    public int getFreeAmount() {
-        return freeConnectionsCounter.getCounter();
-    }
-
-    private boolean isPolled(RedisCommand<?> command) {
-        return command == null
-                || RedisCommands.FLUSHDB.getName().equals(command.getName())
-                || RedisCommands.FLUSHALL.getName().equals(command.getName())
-                || RedisCommands.BLOCKING_COMMAND_NAMES.contains(command.getName())
-                || RedisCommands.BLOCKING_COMMANDS.contains(command)
-                || RedisCommands.PUBSUB_COMMANDS.contains(command.getName())
-                || RedisCommands.SCAN_COMMANDS.contains(command.getName());
-    }
-
-    public void acquireConnection(Runnable runnable, RedisCommand<?> command) {
-        if (isPolled(command)) {
-            freeConnectionsCounter.acquire(runnable);
-            return;
-        }
-
-        runnable.run();
+    public CompletableFuture<Void> acquireConnection(RedisCommand<?> command) {
+        return freeConnectionsCounter.acquire();
     }
     
     public void releaseConnection() {
         freeConnectionsCounter.release();
     }
 
-    AtomicBoolean lock = new AtomicBoolean();
+    public void addConnection(RedisConnection conn) {
+        conn.setLastUsageTime(System.nanoTime());
+        if (conn instanceof RedisPubSubConnection) {
+            freeSubscribeConnections.add((RedisPubSubConnection) conn);
+        } else {
+            freeConnections.add(conn);
+        }
+    }
 
     public RedisConnection pollConnection(RedisCommand<?> command) {
-        if (isPolled(command)) {
-            while (true) {
-                if (lock.compareAndSet(false, true)) {
-                    if (!iter.hasNext()) {
-                        iter = freeConnections.iterator();
-                    }
-                    try {
-                        if (iter.hasNext()) {
-                            RedisConnection c = iter.next();
-                            iter.remove();
-                            if (c != null) {
-                                c.incUsage();
-                                c.setPooled(true);
-                            }
-                            return c;
-                        }
-                        return null;
-                    } finally {
-                        lock.set(false);
-                    }
-                }
-            }
+        RedisConnection c = freeConnections.poll();
+        if (c != null) {
+            c.incUsage();
         }
-
-        while (true) {
-            if (lock.compareAndSet(false, true)) {
-                if (!iter.hasNext()) {
-                    iter = freeConnections.iterator();
-                }
-                try {
-                    if (iter.hasNext()) {
-                        RedisConnection c = iter.next();
-                        if (c != null) {
-                            c.incUsage();
-                        }
-                        return c;
-                    }
-                    return null;
-                } finally {
-                    lock.set(false);
-                }
-            }
-        }
+        return c;
     }
 
     public void releaseConnection(RedisConnection connection) {
@@ -239,30 +184,22 @@ public class ClientConnectionsEntry {
         }
 
         connection.setLastUsageTime(System.nanoTime());
-        if (connection.getUsage() == 0) {
-            freeConnections.add(connection);
-            return;
-        }
+        freeConnections.add(connection);
         connection.decUsage();
-        if (connection.isPooled() && connection.getUsage() == 0) {
-            freeConnections.add(connection);
-            connection.setPooled(false);
-        }
     }
 
-    public RFuture<RedisConnection> connect() {
-        RFuture<RedisConnection> future = client.connectAsync();
-        future.onComplete((conn, e) -> {
+    public CompletionStage<RedisConnection> connect() {
+        CompletionStage<RedisConnection> future = client.connectAsync();
+        return future.whenComplete((conn, e) -> {
             if (e != null) {
                 return;
             }
-            
+
             onConnect(conn);
             log.debug("new connection created: {}", conn);
             
             allConnections.add(conn);
         });
-        return future;
     }
     
     private void onConnect(final RedisConnection conn) {
@@ -286,20 +223,18 @@ public class ClientConnectionsEntry {
         connectionManager.getConnectionEventsHub().fireConnect(conn.getRedisClient().getAddr());
     }
 
-    public RFuture<RedisPubSubConnection> connectPubSub() {
-        RFuture<RedisPubSubConnection> future = client.connectPubSubAsync();
-        future.onComplete((res, e) -> {
+    public CompletionStage<RedisPubSubConnection> connectPubSub() {
+        CompletionStage<RedisPubSubConnection> future = client.connectPubSubAsync();
+        return future.whenComplete((conn, e) -> {
             if (e != null) {
                 return;
             }
             
-            RedisPubSubConnection conn = future.getNow();
             onConnect(conn);
             log.debug("new pubsub connection created: {}", conn);
 
             allSubscribeConnections.add(conn);
         });
-        return future;
     }
     
     public Queue<RedisConnection> getAllConnections() {
@@ -328,8 +263,8 @@ public class ClientConnectionsEntry {
         freeSubscribeConnections.add(connection);
     }
 
-    public void acquireSubscribeConnection(Runnable runnable) {
-        freeSubscribeConnectionsCounter.acquire(runnable);
+    public CompletableFuture<Void> acquireSubscribeConnection() {
+        return freeSubscribeConnectionsCounter.acquire();
     }
 
     public void releaseSubscribeConnection() {

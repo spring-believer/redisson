@@ -135,7 +135,7 @@ public class ConnectionWatchdog extends ChannelInboundHandlerAdapter {
                                     connection.getRedisClient().getAddr(), channel.localAddress(), channel.remoteAddress());
                         } else {
                             RedisConnection c = RedisConnection.getFrom(channel);
-                            c.getConnectionPromise().onComplete((res, e) -> {
+                            c.getConnectionPromise().whenComplete((res, e) -> {
                                 if (e == null) {
                                     if (connection.getRedisClient().isShutdown()
                                             || connection.isClosed()) {
@@ -170,6 +170,9 @@ public class ConnectionWatchdog extends ChannelInboundHandlerAdapter {
             }
             for (Entry<ChannelName, Codec> entry : conn.getPatternChannels().entrySet()) {
                 conn.psubscribe(entry.getValue(), entry.getKey());
+            }
+            for (Entry<ChannelName, Codec> entry : conn.getShardedChannels().entrySet()) {
+                conn.ssubscribe(entry.getValue(), entry.getKey());
             }
         }
     }

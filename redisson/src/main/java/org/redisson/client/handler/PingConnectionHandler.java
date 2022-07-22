@@ -15,8 +15,9 @@
  */
 package org.redisson.client.handler;
 
-import java.util.concurrent.TimeUnit;
-
+import io.netty.channel.ChannelHandler.Sharable;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
 import org.redisson.api.RFuture;
 import org.redisson.client.RedisClientConfig;
 import org.redisson.client.RedisConnection;
@@ -26,11 +27,9 @@ import org.redisson.client.protocol.RedisCommands;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import io.netty.channel.ChannelHandler.Sharable;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelInboundHandlerAdapter;
-import io.netty.util.Timeout;
-import io.netty.util.TimerTask;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 
@@ -51,7 +50,7 @@ public class PingConnectionHandler extends ChannelInboundHandlerAdapter {
     @Override
     public void channelActive(ChannelHandlerContext ctx) throws Exception {
         RedisConnection connection = RedisConnection.getFrom(ctx.channel());
-        connection.getConnectionPromise().onComplete((res, e) -> {
+        connection.getConnectionPromise().whenComplete((res, e) -> {
             if (e == null) {
                 sendPing(ctx);
             }
@@ -61,40 +60,48 @@ public class PingConnectionHandler extends ChannelInboundHandlerAdapter {
 
     private void sendPing(ChannelHandlerContext ctx) {
         RedisConnection connection = RedisConnection.getFrom(ctx.channel());
-        CommandData<?, ?> commandData = connection.getCurrentCommand();
         RFuture<String> future;
-        if ((commandData == null || !commandData.isBlockingCommand()) && !connection.isQueued()) {
+        CommandData<?, ?> currentCommand = connection.getCurrentCommand();
+        if (connection.getUsage() == 0 && (currentCommand == null || !currentCommand.isBlockingCommand())) {
             future = connection.async(StringCodec.INSTANCE, RedisCommands.PING);
         } else {
             future = null;
         }
 
-        config.getTimer().newTimeout(new TimerTask() {
-            @Override
-            public void run(Timeout timeout) throws Exception {
-                if (connection.isClosed() || ctx.isRemoved()) {
-                    return;
-                }
+        config.getTimer().newTimeout(timeout -> {
+            if (connection.isClosed() || ctx.isRemoved()) {
+                return;
+            }
 
-                CommandData<?, ?> commandData = connection.getCurrentCommand();
-                if (commandData != null && commandData.isBlockingCommand()) {
-                    sendPing(ctx);
-                    return;
-                }
+            CommandData<?, ?> cd = connection.getCurrentCommand();
+            if (cd != null && cd.isBlockingCommand()) {
+                sendPing(ctx);
+                return;
+            }
 
-                if (future != null
-                        && (future.cancel(false) || !future.isSuccess())) {
-                    ctx.channel().close();
-                    if (future.cause() != null && !future.isCancelled()) {
-                        log.error("Unable to send PING command over channel: " + ctx.channel(), future.cause());
-                    }
-                    log.debug("channel: {} closed due to PING response timeout set in {} ms", ctx.channel(), config.getPingConnectionInterval());
-                } else {
-                    sendPing(ctx);
+            if (connection.getUsage() == 0
+                    && future != null
+                        && (future.cancel(false) || cause(future) != null)) {
+                ctx.channel().close();
+                if (cause(future) != null && !future.isCancelled()) {
+                    log.error("Unable to send PING command over channel: " + ctx.channel(), cause(future));
                 }
+                log.debug("channel: {} closed due to PING response timeout set in {} ms", ctx.channel(), config.getPingConnectionInterval());
+            } else {
+                sendPing(ctx);
             }
         }, config.getPingConnectionInterval(), TimeUnit.MILLISECONDS);
     }
 
+    protected Throwable cause(RFuture<?> future) {
+        try {
+            future.toCompletableFuture().getNow(null);
+            return null;
+        } catch (CompletionException ex2) {
+            return ex2.getCause();
+        } catch (CancellationException ex1) {
+            return ex1;
+        }
+    }
 
 }

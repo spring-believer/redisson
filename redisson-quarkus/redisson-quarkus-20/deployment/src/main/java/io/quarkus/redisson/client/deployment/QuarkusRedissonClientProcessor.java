@@ -28,13 +28,8 @@ import io.quarkus.deployment.builditem.nativeimage.ReflectiveClassBuildItem;
 import io.quarkus.deployment.builditem.nativeimage.RuntimeInitializedClassBuildItem;
 import io.quarkus.redisson.client.runtime.RedissonClientProducer;
 import io.quarkus.redisson.client.runtime.RedissonClientRecorder;
-import io.quarkus.runtime.Quarkus;
-import org.eclipse.microprofile.config.ConfigProvider;
-import org.redisson.config.PropertiesConvertor;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 
 /**
  *
@@ -69,17 +64,6 @@ class QuarkusRedissonClientProcessor {
         nativeResources.produce(new NativeImageResourceBuildItem("META-INF/services/org.jboss.marshalling.ProviderDescriptor"));
         watchedFiles.produce(new HotDeploymentWatchedFileBuildItem("redisson.yaml"));
 
-        if (Quarkus.class.getPackage().getImplementationVersion().startsWith("1.")) {
-            staticItems.produce(new RuntimeInitializedClassBuildItem("io.quarkus.redisson.client.runtime.graal.NetUtilSubstitutions$NetUtilLocalhost4LazyHolder"));
-            staticItems.produce(new RuntimeInitializedClassBuildItem("io.quarkus.redisson.client.runtime.graal.NetUtilSubstitutions$NetUtilLocalhost6LazyHolder"));
-            staticItems.produce(new RuntimeInitializedClassBuildItem("io.quarkus.redisson.client.runtime.graal.NetUtilSubstitutions$NetUtilLocalhostLazyHolder"));
-        }
-
-        staticItems.produce(new RuntimeInitializedClassBuildItem("io.netty.resolver.HostsFileEntriesResolver"));
-        staticItems.produce(new RuntimeInitializedClassBuildItem("io.netty.resolver.dns.DnsNameResolver"));
-        staticItems.produce(new RuntimeInitializedClassBuildItem("io.netty.resolver.dns.DefaultDnsServerAddressStreamProvider"));
-        staticItems.produce(new RuntimeInitializedClassBuildItem("io.netty.resolver.dns.DnsServerAddressStreamProviders$DefaultProviderHolder"));
-
         reflectiveItems.produce(new ReflectiveClassBuildItem(false, false, "org.redisson.codec.MarshallingCodec"));
         reflectiveItems.produce(new ReflectiveClassBuildItem(false, false, "org.jboss.marshalling.river.RiverProviderDescriptor"));
 
@@ -98,18 +82,7 @@ class QuarkusRedissonClientProcessor {
     @BuildStep
     @Record(ExecutionTime.RUNTIME_INIT)
     RedissonClientItemBuild build(RedissonClientRecorder recorder) throws IOException {
-        InputStream stream = Thread.currentThread().getContextClassLoader().getResourceAsStream("redisson.yaml");
-        if (stream != null) {
-            byte[] array = new byte[stream.available()];
-            stream.read(array);
-            recorder.configureRedisson(new String(array, StandardCharsets.UTF_8));
-        } else {
-            String yaml = PropertiesConvertor.toYaml("quarkus.redisson.", ConfigProvider.getConfig().getPropertyNames(), prop -> {
-                return ConfigProvider.getConfig().getValue(prop, String.class);
-            });
-            recorder.configureRedisson(yaml);
-        }
-
+        recorder.createProducer();
         return new RedissonClientItemBuild();
     }
 

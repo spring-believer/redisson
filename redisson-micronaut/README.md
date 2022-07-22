@@ -2,7 +2,7 @@
 
 Integrates Redisson with [Micronaut](https://micronaut.io/) framework.  
 
-Supports Micronaut 2.0.x - 2.5.x  
+Supports Micronaut 2.0.x - 3.4.x
 
 ## Usage  
 
@@ -13,15 +13,21 @@ Maven
 ```xml  
 <dependency>
     <groupId>org.redisson</groupId>
-    <artifactId>redisson-micronaut</artifactId>
-    <version>3.16.0</version>
+    <!-- for Micronaut v2.0.x - v2.5.x -->
+    <artifactId>redisson-micronaut-20</artifactId>
+    <!-- for Micronaut v3.x.x -->
+    <artifactId>redisson-micronaut-30</artifactId>
+    <version>3.17.4</version>
 </dependency>
 ```
 
 Gradle
 
 ```groovy
-compile 'org.redisson:redisson-micronaut:3.16.0'
+// for Micronaut v2.0.x - v2.5.x
+compile 'org.redisson:redisson-micronaut-20:3.17.4'
+// for Micronaut v3.x.x
+compile 'org.redisson:redisson-micronaut-30:3.17.4'
 ```
 
 ### 2. Add settings into `application.yml` file
@@ -145,9 +151,11 @@ redisson:
 </details>
 
 <details>
-    <summary><b>Clustered Map Cache</b> settings (<i>available only in <a href="https://redisson.pro">Redisson PRO</a></i>). Click to expand!</summary>
+    <summary><b>Clustered Map Cache</b> settings. Click to expand!</summary>
 
 <br/>
+
+_This feature is available only in [Redisson PRO](https://redisson.pro)_    
     
 | | |
 |-|-|
@@ -230,9 +238,11 @@ redisson:
 </details>
     
 <details>
-    <summary><b>Clustered Local Cached Map Cache</b> settings (<i>available only in <a href="https://redisson.pro">Redisson PRO</a></i>). Click to expand!</summary>
+    <summary><b>Clustered Local Cached Map Cache</b> settings. Click to expand!</summary>
 
 <br/>
+    
+_This feature is available only in [Redisson PRO](https://redisson.pro)_
     
 | | |
 |-|-|
@@ -376,9 +386,11 @@ redisson:
 </details>
     
 <details>
-    <summary><b>Local Cached Map Cache</b> settings (<i>available only in <a href="https://redisson.pro">Redisson PRO</a></i>). Click to expand!</summary>
+    <summary><b>Local Cached Map Cache</b> settings. Click to expand!</summary>
 
 <br/>
+
+_This feature is available only in [Redisson PRO](https://redisson.pro)_    
     
 | | |
 |-|-|

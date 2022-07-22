@@ -15,7 +15,6 @@
  */
 package org.redisson.command;
 
-import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.util.ReferenceCountUtil;
@@ -24,7 +23,6 @@ import io.netty.util.TimerTask;
 import io.netty.util.concurrent.FutureListener;
 import org.redisson.RedissonShutdownException;
 import org.redisson.ScanResult;
-import org.redisson.api.RFuture;
 import org.redisson.cache.LRUCacheMap;
 import org.redisson.client.*;
 import org.redisson.client.codec.BaseCodec;
@@ -38,39 +36,42 @@ import org.redisson.connection.NodeSource;
 import org.redisson.connection.NodeSource.Redirect;
 import org.redisson.liveobject.core.RedissonObjectBuilder;
 import org.redisson.misc.LogHelper;
-import org.redisson.misc.RPromise;
-import org.redisson.misc.RedissonPromise;
+import org.redisson.misc.RedisURI;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
 
 /**
- * 
+ *
  * @author Nikita Koksharov
  *
  * @param <V> type of value
  * @param <R> type of returned value
  */
-@SuppressWarnings({"NestedIfDepth"})
+@SuppressWarnings({"NestedIfDepth", "ParameterNumber"})
 public class RedisExecutor<V, R> {
-    
+
     static final Logger log = LoggerFactory.getLogger(RedisExecutor.class);
-    
-    final boolean readOnlyMode; 
-    final RedisCommand<V> command; 
-    final Object[] params; 
-    final RPromise<R> mainPromise; 
+
+    final boolean readOnlyMode;
+    final RedisCommand<V> command;
+    final Object[] params;
+    final CompletableFuture<R> mainPromise;
     final boolean ignoreRedirect;
     final RedissonObjectBuilder objectBuilder;
     final ConnectionManager connectionManager;
     final RedissonObjectBuilder.ReferenceType referenceType;
+    final boolean noRetry;
 
-    RFuture<RedisConnection> connectionFuture;
+    CompletableFuture<RedisConnection> connectionFuture;
     NodeSource source;
     Codec codec;
     volatile int attempt;
@@ -78,15 +79,15 @@ public class RedisExecutor<V, R> {
     volatile BiConsumer<R, Throwable> mainPromiseListener;
     volatile ChannelFuture writeFuture;
     volatile RedisException exception;
-    
+
     int attempts;
     long retryInterval;
     long responseTimeout;
-    
+
     public RedisExecutor(boolean readOnlyMode, NodeSource source, Codec codec, RedisCommand<V> command,
-                         Object[] params, RPromise<R> mainPromise, boolean ignoreRedirect,
+                         Object[] params, CompletableFuture<R> mainPromise, boolean ignoreRedirect,
                          ConnectionManager connectionManager, RedissonObjectBuilder objectBuilder,
-                         RedissonObjectBuilder.ReferenceType referenceType) {
+                         RedissonObjectBuilder.ReferenceType referenceType, boolean noRetry) {
         super();
         this.readOnlyMode = readOnlyMode;
         this.source = source;
@@ -97,7 +98,8 @@ public class RedisExecutor<V, R> {
         this.ignoreRedirect = ignoreRedirect;
         this.connectionManager = connectionManager;
         this.objectBuilder = objectBuilder;
-        
+        this.noRetry = noRetry;
+
         this.attempts = connectionManager.getConfig().getRetryAttempts();
         this.retryInterval = connectionManager.getConfig().getRetryInterval();
         this.responseTimeout = connectionManager.getConfig().getTimeout();
@@ -112,15 +114,15 @@ public class RedisExecutor<V, R> {
 
         if (!connectionManager.getShutdownLatch().acquire()) {
             free();
-            mainPromise.tryFailure(new RedissonShutdownException("Redisson is shutdown"));
+            mainPromise.completeExceptionally(new RedissonShutdownException("Redisson is shutdown"));
             return;
         }
 
         codec = getCodec(codec);
-        
-        RFuture<RedisConnection> connectionFuture = getConnection();
 
-        RPromise<R> attemptPromise = new RedissonPromise<>();
+        CompletableFuture<RedisConnection> connectionFuture = getConnection().toCompletableFuture();
+
+        CompletableFuture<R> attemptPromise = new CompletableFuture<>();
         mainPromiseListener = (r, e) -> {
             if (mainPromise.isCancelled() && connectionFuture.cancel(false)) {
                 log.debug("Connection obtaining canceled for {}", command);
@@ -130,9 +132,9 @@ public class RedisExecutor<V, R> {
                 }
             }
         };
-        
+
         if (attempt == 0) {
-            mainPromise.onComplete((r, e) -> {
+            mainPromise.whenComplete((r, e) -> {
                 if (this.mainPromiseListener != null) {
                     this.mainPromiseListener.accept(r, e);
                 }
@@ -141,13 +143,13 @@ public class RedisExecutor<V, R> {
 
         scheduleRetryTimeout(connectionFuture, attemptPromise);
 
-        connectionFuture.onComplete((connection, e) -> {
+        connectionFuture.whenComplete((connection, e) -> {
             if (connectionFuture.isCancelled()) {
                 connectionManager.getShutdownLatch().release();
                 return;
             }
 
-            if (!connectionFuture.isSuccess()) {
+            if (connectionFuture.isDone() && connectionFuture.isCompletedExceptionally()) {
                 connectionManager.getShutdownLatch().release();
                 exception = convertException(connectionFuture);
                 return;
@@ -163,14 +165,14 @@ public class RedisExecutor<V, R> {
             });
         });
 
-        attemptPromise.onComplete((r, e) -> {
+        attemptPromise.whenComplete((r, e) -> {
             releaseConnection(attemptPromise, connectionFuture);
 
             checkAttemptPromise(attemptPromise, connectionFuture);
         });
     }
 
-    private void scheduleRetryTimeout(RFuture<RedisConnection> connectionFuture, RPromise<R> attemptPromise) {
+    private void scheduleRetryTimeout(CompletableFuture<RedisConnection> connectionFuture, CompletableFuture<R> attemptPromise) {
         TimerTask retryTimerTask = new TimerTask() {
 
             @Override
@@ -180,35 +182,25 @@ public class RedisExecutor<V, R> {
                 }
 
                 if (connectionFuture.cancel(false)) {
-                    if (exception == null) {
-                        exception = new RedisTimeoutException("Unable to acquire connection! " + connectionFuture +
-                                    "Increase connection pool size. "
-                                    + "Node source: " + source
-                                    + ", command: " + LogHelper.toString(command, params)
-                                    + " after " + attempt + " retry attempts");
-                    }
+                    exception = new RedisTimeoutException("Unable to acquire connection! " + connectionFuture +
+                                "Increase connection pool size. "
+                                + "Node source: " + source
+                                + ", command: " + LogHelper.toString(command, params)
+                                + " after " + attempt + " retry attempts");
                 } else {
-                    if (connectionFuture.isSuccess()) {
+                    if (connectionFuture.isDone() && !connectionFuture.isCompletedExceptionally()) {
                         if (writeFuture == null || !writeFuture.isDone()) {
                             if (attempt == attempts) {
                                 if (writeFuture != null && writeFuture.cancel(false)) {
                                     if (exception == null) {
-                                        long totalSize = 0;
-                                        if (params != null) {
-                                            for (Object param : params) {
-                                                if (param instanceof ByteBuf) {
-                                                    totalSize += ((ByteBuf) param).readableBytes();
-                                                }
-                                            }
-                                        }
-
                                         exception = new RedisTimeoutException("Command still hasn't been written into connection! " +
-                                                "Try to increase nettyThreads setting. Payload size in bytes: " + totalSize
-                                                + ". Node source: " + source + ", connection: " + connectionFuture.getNow()
+                                                "Check connection with Redis node: " + getNow(connectionFuture).getRedisClient().getAddr() +
+                                                " for TCP packet drops. Try to increase nettyThreads setting. "
+                                                + " Node source: " + source + ", connection: " + getNow(connectionFuture)
                                                 + ", command: " + LogHelper.toString(command, params)
                                                 + " after " + attempt + " retry attempts");
                                     }
-                                    attemptPromise.tryFailure(exception);
+                                    attemptPromise.completeExceptionally(exception);
                                 }
                                 return;
                             }
@@ -234,7 +226,7 @@ public class RedisExecutor<V, R> {
                 if (attempt == attempts) {
                     // filled out in connectionFuture or writeFuture handler
                     if (exception != null) {
-                        attemptPromise.tryFailure(exception);
+                        attemptPromise.completeExceptionally(exception);
                     }
                     return;
                 }
@@ -247,7 +239,7 @@ public class RedisExecutor<V, R> {
                     log.debug("attempt {} for command {} and params {}",
                             attempt, command, LogHelper.toString(params));
                 }
-                
+
                 mainPromiseListener = null;
 
                 execute();
@@ -268,18 +260,18 @@ public class RedisExecutor<V, R> {
         }
     }
     
-    private void checkWriteFuture(ChannelFuture future, RPromise<R> attemptPromise, RedisConnection connection) {
+    private void checkWriteFuture(ChannelFuture future, CompletableFuture<R> attemptPromise, RedisConnection connection) {
         if (future.isCancelled() || attemptPromise.isDone()) {
             return;
         }
 
         if (!future.isSuccess()) {
             exception = new WriteRedisConnectionException(
-                    "Unable to write command into connection! Node source: " + source + ", connection: " + connection +
+                    "Unable to write command into connection! Increase connection pool size. Node source: " + source + ", connection: " + connection +
                     ", command: " + LogHelper.toString(command, params)
                     + " after " + attempt + " retry attempts", future.cause());
             if (attempt == attempts) {
-                attemptPromise.tryFailure(exception);
+                attemptPromise.completeExceptionally(exception);
             }
             return;
         }
@@ -289,11 +281,9 @@ public class RedisExecutor<V, R> {
         scheduleResponseTimeout(attemptPromise, connection);
     }
 
-    private void scheduleResponseTimeout(RPromise<R> attemptPromise, RedisConnection connection) {
+    private void scheduleResponseTimeout(CompletableFuture<R> attemptPromise, RedisConnection connection) {
         long timeoutTime = responseTimeout;
-        if (command != null
-                && (RedisCommands.BLOCKING_COMMAND_NAMES.contains(command.getName())
-                        || RedisCommands.BLOCKING_COMMANDS.contains(command))) {
+        if (command != null && command.isBlockingCommand()) {
             Long popTimeout = null;
             if (RedisCommands.BLOCKING_COMMANDS.contains(command)) {
                 for (int i = 0; i < params.length-1; i++) {
@@ -305,7 +295,7 @@ public class RedisExecutor<V, R> {
             } else {
                 popTimeout = Long.valueOf(params[params.length - 1].toString());
             }
-            
+
             handleBlockingOperations(attemptPromise, connection, popTimeout);
             if (popTimeout == 0) {
                 return;
@@ -335,9 +325,12 @@ public class RedisExecutor<V, R> {
                 return;
             }
 
-            attemptPromise.tryFailure(
+            attemptPromise.completeExceptionally(
                     new RedisResponseTimeoutException("Redis server response timeout (" + timeoutAmount + " ms) occured"
-                            + " after " + attempt + " retry attempts. Increase nettyThreads and/or timeout settings. Try to define pingConnectionInterval setting. Command: "
+                            + " after " + attempt + " retry attempts,"
+                            + " is non-idempotent command: " + (command != null && command.isNoRetry())
+                            + " Check connection with Redis node: " + connection.getRedisClient().getAddr() + " for TCP packet drops. "
+                            + " Try to increase nettyThreads and/or timeout settings. Command: "
                             + LogHelper.toString(command, params) + ", channel: " + connection.getChannel()));
         };
 
@@ -345,27 +338,29 @@ public class RedisExecutor<V, R> {
     }
 
     protected boolean isResendAllowed(int attempt, int attempts) {
-        return attempt < attempts;
+        return attempt < attempts
+                && !noRetry
+                    && (command == null || (!command.isBlockingCommand() && !command.isNoRetry()));
     }
 
-    private void handleBlockingOperations(RPromise<R> attemptPromise, RedisConnection connection, Long popTimeout) {
+    private void handleBlockingOperations(CompletableFuture<R> attemptPromise, RedisConnection connection, Long popTimeout) {
         FutureListener<Void> listener = f -> {
-            mainPromise.tryFailure(new RedissonShutdownException("Redisson is shutdown"));
+            mainPromise.completeExceptionally(new RedissonShutdownException("Redisson is shutdown"));
         };
 
         Timeout scheduledFuture;
         if (popTimeout != 0) {
             // handling cases when connection has been lost
             scheduledFuture = connectionManager.newTimeout(timeout -> {
-                if (attemptPromise.trySuccess(null)) {
+                if (attemptPromise.complete(null)) {
                     connection.forceFastReconnectAsync();
                 }
-            }, popTimeout + 1, TimeUnit.SECONDS);
+            }, popTimeout + 3, TimeUnit.SECONDS);
         } else {
             scheduledFuture = null;
         }
 
-        mainPromise.onComplete((res, e) -> {
+        mainPromise.whenComplete((res, e) -> {
             if (scheduledFuture != null) {
                 scheduledFuture.cancel();
             }
@@ -376,17 +371,17 @@ public class RedisExecutor<V, R> {
 
             // handling cancel operation for blocking commands
             if ((mainPromise.isCancelled()
-                    || mainPromise.cause() instanceof  InterruptedException)
+                    || e instanceof  InterruptedException)
                         && !attemptPromise.isDone()) {
                 log.debug("Canceled blocking operation {} used {}", command, connection);
-                connection.forceFastReconnectAsync().onComplete((r, ex) -> {
+                connection.forceFastReconnectAsync().whenComplete((r, ex) -> {
                     attemptPromise.cancel(true);
                 });
                 return;
             }
 
             if (e instanceof RedissonShutdownException) {
-                attemptPromise.tryFailure(e);
+                attemptPromise.completeExceptionally(e);
             }
         });
 
@@ -396,8 +391,19 @@ public class RedisExecutor<V, R> {
             }
         }
     }
-    
-    protected void checkAttemptPromise(RPromise<R> attemptFuture, RFuture<RedisConnection> connectionFuture) {
+
+    protected Throwable cause(CompletableFuture<?> future) {
+        try {
+            future.getNow(null);
+            return null;
+        } catch (CompletionException ex2) {
+            return ex2.getCause();
+        } catch (CancellationException ex1) {
+            return ex1;
+        }
+    }
+
+    protected void checkAttemptPromise(CompletableFuture<R> attemptFuture, CompletableFuture<RedisConnection> connectionFuture) {
         timeout.cancel();
         if (attemptFuture.isCancelled()) {
             return;
@@ -405,35 +411,50 @@ public class RedisExecutor<V, R> {
 
         try {
             mainPromiseListener = null;
-            
-            if (attemptFuture.cause() instanceof RedisMovedException && !ignoreRedirect) {
-                RedisMovedException ex = (RedisMovedException) attemptFuture.cause();
+
+            Throwable cause = cause(attemptFuture);
+            if (cause instanceof RedisMovedException && !ignoreRedirect) {
+                RedisMovedException ex = (RedisMovedException) cause;
                 if (source.getRedirect() == Redirect.MOVED) {
-                    mainPromise.tryFailure(new RedisException("MOVED redirection loop detected. Node " + source.getAddr() + " has further redirect to " + ex.getUrl()));
+                    mainPromise.completeExceptionally(new RedisException("MOVED redirection loop detected. Node " + source.getAddr() + " has further redirect to " + ex.getUrl()));
                     return;
                 }
 
                 onException();
-                
-                source = new NodeSource(ex.getSlot(), connectionManager.applyNatMap(ex.getUrl()), Redirect.MOVED);
-                execute();
+
+                CompletableFuture<RedisURI> ipAddrFuture = connectionManager.resolveIP(ex.getUrl());
+                ipAddrFuture.whenComplete((ip, e) -> {
+                    if (e != null) {
+                        handleError(connectionFuture, e);
+                        return;
+                    }
+                    source = new NodeSource(ex.getSlot(), ip, Redirect.MOVED);
+                    execute();
+                });
                 return;
             }
-            
-            if (attemptFuture.cause() instanceof RedisAskException && !ignoreRedirect) {
-                RedisAskException ex = (RedisAskException) attemptFuture.cause();
-                
+
+            if (cause instanceof RedisAskException && !ignoreRedirect) {
+                RedisAskException ex = (RedisAskException) cause;
+
                 onException();
-                
-                source = new NodeSource(ex.getSlot(), connectionManager.applyNatMap(ex.getUrl()), Redirect.ASK);
-                execute();
+
+                CompletableFuture<RedisURI> ipAddrFuture = connectionManager.resolveIP(ex.getUrl());
+                ipAddrFuture.whenComplete((ip, e) -> {
+                    if (e != null) {
+                        handleError(connectionFuture, e);
+                        return;
+                    }
+                    source = new NodeSource(ex.getSlot(), ip, Redirect.ASK);
+                    execute();
+                });
                 return;
             }
-            
-            if (attemptFuture.cause() instanceof RedisLoadingException
-                    || attemptFuture.cause() instanceof RedisTryAgainException
-                        || attemptFuture.cause() instanceof RedisClusterDownException
-                            || attemptFuture.cause() instanceof RedisBusyException) {
+
+            if (cause instanceof RedisLoadingException
+                    || cause instanceof RedisTryAgainException
+                        || cause instanceof RedisClusterDownException
+                            || cause instanceof RedisBusyException) {
                 if (attempt < attempts) {
                     onException();
                     connectionManager.newTimeout(timeout -> {
@@ -443,94 +464,125 @@ public class RedisExecutor<V, R> {
                     return;
                 }
             }
-            
+
             free();
-            
+
             handleResult(attemptFuture, connectionFuture);
-            
+
         } catch (Exception e) {
             handleError(connectionFuture, e);
         }
     }
 
-    protected void handleResult(RPromise<R> attemptPromise, RFuture<RedisConnection> connectionFuture) throws ReflectiveOperationException {
-        if (attemptPromise.isSuccess()) {
-            R res = attemptPromise.getNow();
-            if (res instanceof ScanResult) {
-                ((ScanResult) res).setRedisClient(connectionFuture.getNow().getRedisClient());
-            }
-            
-            handleSuccess(mainPromise, connectionFuture, res);
-        } else {
-            handleError(connectionFuture, attemptPromise.cause());
-        }
-    }
-    
-    protected void onException() {
-    }
-
-    protected void handleError(RFuture<RedisConnection> connectionFuture, Throwable cause) {
-        mainPromise.tryFailure(cause);
-    }
-
-    protected void handleSuccess(RPromise<R> promise, RFuture<RedisConnection> connectionFuture, R res) throws ReflectiveOperationException {
-        if (objectBuilder != null) {
-            handleReference(promise, res);
-        } else {
-            promise.trySuccess(res);
-        }
-    }
-
-    private void handleReference(RPromise<R> promise, R res) throws ReflectiveOperationException {
-        if (objectBuilder != null) {
-            promise.trySuccess((R) objectBuilder.tryHandleReference(res, referenceType));
-        } else {
-            promise.trySuccess(res);
-        }
-    }
-
-    protected void sendCommand(RPromise<R> attemptPromise, RedisConnection connection) {
-        if (source.getRedirect() == Redirect.ASK) {
-            List<CommandData<?, ?>> list = new ArrayList<>(2);
-            RPromise<Void> promise = new RedissonPromise<>();
-            list.add(new CommandData<>(promise, codec, RedisCommands.ASKING, new Object[]{}));
-            list.add(new CommandData<>(attemptPromise, codec, command, params));
-            RPromise<Void> main = new RedissonPromise<>();
-            writeFuture = connection.send(new CommandsData(main, list, false, false));
-        } else {
-            if (log.isDebugEnabled()) {
-                log.debug("acquired connection for command {} and params {} from slot {} using node {}... {}",
-                        command, LogHelper.toString(params), source, connection.getRedisClient().getAddr(), connection);
-            }
-            writeFuture = connection.send(new CommandData<>(attemptPromise, codec, command, params));
-        }
-    }
-    
-    protected void releaseConnection(RPromise<R> attemptPromise, RFuture<RedisConnection> connectionFuture) {
-        if (!connectionFuture.isSuccess()) {
+    protected void handleResult(CompletableFuture<R> attemptPromise, CompletableFuture<RedisConnection> connectionFuture) throws ReflectiveOperationException {
+        R res;
+        try {
+            res = attemptPromise.getNow(null);
+        } catch (CompletionException e) {
+            handleError(connectionFuture, e.getCause());
+            return;
+        } catch (CancellationException e) {
+            handleError(connectionFuture, e);
             return;
         }
 
-        RedisConnection connection = connectionFuture.getNow();
-        connection.setQueued(false);
+        if (res instanceof ScanResult) {
+            ((ScanResult) res).setRedisClient(getNow(connectionFuture).getRedisClient());
+        }
+
+        handleSuccess(mainPromise, connectionFuture, res);
+    }
+
+    protected void onException() {
+    }
+
+    protected void handleError(CompletableFuture<RedisConnection> connectionFuture, Throwable cause) {
+        mainPromise.completeExceptionally(cause);
+    }
+
+    protected void handleSuccess(CompletableFuture<R> promise, CompletableFuture<RedisConnection> connectionFuture, R res) throws ReflectiveOperationException {
+        if (objectBuilder != null) {
+            handleReference(promise, res);
+        } else {
+            promise.complete(res);
+        }
+    }
+
+    private void handleReference(CompletableFuture<R> promise, R res) throws ReflectiveOperationException {
+        if (objectBuilder != null) {
+            promise.complete((R) objectBuilder.tryHandleReference(res, referenceType));
+        } else {
+            promise.complete(res);
+        }
+    }
+
+    protected void sendCommand(CompletableFuture<R> attemptPromise, RedisConnection connection) {
+        if (source.getRedirect() == Redirect.ASK) {
+            List<CommandData<?, ?>> list = new ArrayList<>(2);
+            CompletableFuture<Void> promise = new CompletableFuture<>();
+            list.add(new CommandData<>(promise, codec, RedisCommands.ASKING, new Object[]{}));
+            list.add(new CommandData<>(attemptPromise, codec, command, params));
+            CompletableFuture<Void> main = new CompletableFuture<>();
+            writeFuture = connection.send(new CommandsData(main, list, false, false));
+        } else {
+            if (log.isDebugEnabled()) {
+                String connectionType = " ";
+                if (connection instanceof RedisPubSubConnection) {
+                    connectionType = " pubsub ";
+                }
+                log.debug("acquired{}connection for command {} and params {} from slot {} using node {}... {}",
+                        connectionType, command, LogHelper.toString(params), source, connection.getRedisClient().getAddr(), connection);
+            }
+            writeFuture = connection.send(new CommandData<>(attemptPromise, codec, command, params));
+
+            if (connectionManager.getConfig().getMasterConnectionPoolSize() < 10
+                    && !command.isBlockingCommand()) {
+                release(connection);
+            }
+        }
+    }
+
+    protected void releaseConnection(CompletableFuture<R> attemptPromise, CompletableFuture<RedisConnection> connectionFuture) {
+        if (connectionFuture.isDone() && connectionFuture.isCompletedExceptionally()) {
+            return;
+        }
+
+        RedisConnection connection = getNow(connectionFuture);
         connectionManager.getShutdownLatch().release();
+        if (connectionManager.getConfig().getMasterConnectionPoolSize() < 10) {
+            if (source.getRedirect() == Redirect.ASK
+                    || getClass() != RedisExecutor.class
+                        || (command != null && command.isBlockingCommand())) {
+                release(connection);
+            }
+        } else {
+            release(connection);
+        }
+
+        if (log.isDebugEnabled()) {
+            String connectionType = " ";
+            if (connection instanceof RedisPubSubConnection) {
+                connectionType = " pubsub ";
+            }
+
+            log.debug("connection{}released for command {} and params {} from slot {} using connection {}",
+                    connectionType, command, LogHelper.toString(params), source, connection);
+        }
+    }
+
+    private void release(RedisConnection connection) {
         if (readOnlyMode) {
             connectionManager.releaseRead(source, connection);
         } else {
             connectionManager.releaseWrite(source, connection);
         }
-
-        if (log.isDebugEnabled()) {
-            log.debug("connection released for command {} and params {} from slot {} using connection {}",
-                    command, LogHelper.toString(params), source, connection);
-        }
     }
 
     public RedisClient getRedisClient() {
-        return connectionFuture.getNow().getRedisClient();
+        return getNow(connectionFuture).getRedisClient();
     }
 
-    protected RFuture<RedisConnection> getConnection() {
+    protected CompletableFuture<RedisConnection> getConnection() {
         if (readOnlyMode) {
             connectionFuture = connectionManager.connectionReadOp(source, command);
         } else {
@@ -538,7 +590,7 @@ public class RedisExecutor<V, R> {
         }
         return connectionFuture;
     }
-    
+
     private static final Map<ClassLoader, Map<Codec, Codec>> CODECS = new LRUCacheMap<>(25, 0, 0);
 
     protected Codec getCodec(Codec codec) {
@@ -576,13 +628,22 @@ public class RedisExecutor<V, R> {
         }
         return codecToUse;
     }
-    
-    protected <T> RedisException convertException(RFuture<T> future) {
-        if (future.cause() instanceof RedisException) {
-            return (RedisException) future.cause();
+
+    protected <T> T getNow(CompletableFuture<T> future) {
+        try {
+            return future.getNow(null);
+        } catch (Exception e) {
+            return null;
         }
-        return new RedisException("Unexpected exception while processing command", future.cause());
     }
 
-    
+    protected <T> RedisException convertException(CompletableFuture<T> future) {
+        Throwable cause = cause(future);
+        if (cause instanceof RedisException) {
+            return (RedisException) cause;
+        }
+        return new RedisException("Unexpected exception while processing command", cause);
+    }
+
+
 }

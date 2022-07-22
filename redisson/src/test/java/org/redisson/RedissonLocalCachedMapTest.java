@@ -1,5 +1,7 @@
 package org.redisson;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.awaitility.Awaitility;
 import org.awaitility.Durations;
 import org.junit.jupiter.api.Assertions;
@@ -9,6 +11,7 @@ import org.redisson.api.LocalCachedMapOptions.EvictionPolicy;
 import org.redisson.api.LocalCachedMapOptions.ReconnectionStrategy;
 import org.redisson.api.LocalCachedMapOptions.SyncStrategy;
 import org.redisson.api.MapOptions.WriteMode;
+import org.redisson.api.map.MapLoader;
 import org.redisson.client.RedisClient;
 import org.redisson.client.RedisClientConfig;
 import org.redisson.client.RedisConnection;
@@ -18,6 +21,8 @@ import org.redisson.client.codec.IntegerCodec;
 import org.redisson.client.codec.StringCodec;
 import org.redisson.client.protocol.RedisCommands;
 import org.redisson.codec.CompositeCodec;
+import org.redisson.codec.JsonJacksonCodec;
+import org.redisson.codec.TypedJsonJacksonCodec;
 import org.redisson.config.Config;
 
 import java.util.*;
@@ -89,6 +94,34 @@ public class RedissonLocalCachedMapTest extends BaseMapTest {
         
         public abstract void test() throws InterruptedException;
         
+    }
+
+    @Test
+    public void testUpdateStrategy() {
+        LocalCachedMapOptions<String, String> options = LocalCachedMapOptions.<String, String>defaults()
+                .syncStrategy(LocalCachedMapOptions.SyncStrategy.UPDATE);
+
+        RLocalCachedMap<String, String> cachedMap = redisson.getLocalCachedMap("myMap11", options);
+        cachedMap.put("a", "b");
+        cachedMap.remove("a");
+        String value = cachedMap.get("a");
+        assertThat(value).isNull();
+        assertThat(cachedMap.containsKey("a")).isFalse();
+    }
+
+    @Test
+    public void testPutAfterDelete() {
+        RMap<String, String> map = redisson.getLocalCachedMap("test", LocalCachedMapOptions.defaults());
+
+        for (int i = 0; i < 1_000; i++) {
+            map.delete();
+
+            map.put("key", "val1");
+            map.get("key");
+            map.put("key", "val2");
+            String val = map.get("key");
+            assertThat(val).isEqualTo("val2");
+        }
     }
 
     @Test
@@ -166,8 +199,23 @@ public class RedissonLocalCachedMapTest extends BaseMapTest {
         
         assertThat(m.size()).isEqualTo(10000);
     }
-    
-    
+
+    @Test
+    public void testReadAllValues2() {
+        ObjectMapper objectMapper = new JsonJacksonCodec().getObjectMapper()
+                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+        Codec codec = new TypedJsonJacksonCodec(String.class, SimpleValue.class, objectMapper);
+
+        RLocalCachedMap<String, SimpleValue> map1 = redisson.getLocalCachedMap("test", codec, LocalCachedMapOptions.defaults());
+        RLocalCachedMap<String, SimpleValue> map2 = redisson.getLocalCachedMap("test", codec, LocalCachedMapOptions.defaults());
+        map1.put("key", new SimpleValue("3"));
+        Collection<SimpleValue> s = map1.readAllValues();
+        assertThat(s).hasSize(1);
+        Collection<SimpleValue> s2 = map2.readAllValues();
+        assertThat(s2).hasSize(1);
+    }
+
+
     @Test
     public void testReadValuesAndEntries() {
         RLocalCachedMap<Object, Object> m = redisson.getLocalCachedMap("testValuesWithNearCache2",
@@ -578,6 +626,34 @@ public class RedissonLocalCachedMapTest extends BaseMapTest {
     }
 
     @Test
+    public void testGetStoringCacheMissGetAll() {
+        RLocalCachedMap<String, Integer> map = redisson.getLocalCachedMap("test", LocalCachedMapOptions.<String, Integer>defaults().storeCacheMiss(true).loader(new MapLoader<String, Integer>() {
+            @Override
+            public Integer load(String key) {
+                return null;
+            }
+
+            @Override
+            public Iterable<String> loadAllKeys() {
+                return new ArrayList<>();
+            }
+        }));
+        Map<String, Integer> cache = map.getCachedMap();
+
+        Map<String, Integer> s1 = map.getAll(new HashSet<>(Arrays.asList("1", "2", "3")));
+        assertThat(s1).isEmpty();
+
+        Awaitility.await().atMost(Durations.ONE_SECOND)
+                .untilAsserted(() -> assertThat(cache.size()).isEqualTo(3));
+
+        Map<String, Integer> s2 = map.getAll(new HashSet<>(Arrays.asList("1", "2", "3")));
+        assertThat(s2).isEmpty();
+
+        Awaitility.await().atMost(Durations.ONE_SECOND)
+                .untilAsserted(() -> assertThat(cache.size()).isEqualTo(3));
+    }
+
+    @Test
     public void testGetNotStoringCacheMiss() {
         RLocalCachedMap<String, Integer> map = redisson.getLocalCachedMap("test", LocalCachedMapOptions.<String, Integer>defaults().storeCacheMiss(false));
         Map<String, Integer> cache = map.getCachedMap();
@@ -659,7 +735,23 @@ public class RedissonLocalCachedMapTest extends BaseMapTest {
         assertThat(cache.size()).isEqualTo(3);
         assertThat(cache1.size()).isEqualTo(3);
     }
-    
+
+    @Test
+    public void testGetBeforePut() {
+        RLocalCachedMap<String, String> map1 = redisson.getLocalCachedMap("test", LocalCachedMapOptions.defaults());
+        for (int i = 0; i < 1_000; i++) {
+            map1.put("key" + i, "val");
+        }
+
+        RMap<String, String> map2 = redisson.getLocalCachedMap("test", LocalCachedMapOptions.defaults());
+        for (int i = 0; i < 1_000; i++) {
+            map2.get("key" + i);
+            map2.put("key" + i, "value" + i);
+            String cachedValue = map2.get("key" + i);
+            assertThat(cachedValue).isEqualTo("value" + i);
+        }
+    }
+
     @Test
     public void testAddAndGet() throws InterruptedException {
         RLocalCachedMap<Integer, Integer> map = redisson.getLocalCachedMap("getAll", new CompositeCodec(redisson.getConfig().getCodec(), IntegerCodec.INSTANCE), LocalCachedMapOptions.defaults());
@@ -885,13 +977,12 @@ public class RedissonLocalCachedMapTest extends BaseMapTest {
 
         assertThat(map.readAllValues().size()).isEqualTo(3);
         Map<SimpleKey, SimpleValue> testMap = new HashMap<>(map);
-        assertThat(map.readAllValues()).containsOnlyElementsOf(testMap.values());
+        assertThat(map.readAllValues()).containsAll(testMap.values());
         
         RMap<SimpleKey, SimpleValue> map2 = redisson.getLocalCachedMap("simple", LocalCachedMapOptions.defaults());
-        assertThat(map2.readAllValues()).containsOnlyElementsOf(testMap.values());
+        assertThat(map2.readAllValues()).containsAll(testMap.values());
     }
 
-    
     @Test
     public void testInvalidationOnFastRemove() throws InterruptedException {
         new InvalidationTest() {
@@ -935,7 +1026,7 @@ public class RedissonLocalCachedMapTest extends BaseMapTest {
     }
     
     @Test
-    public void testFastRemoveEmpty() throws InterruptedException, ExecutionException {
+    public void testFastRemoveEmpty()  {
         LocalCachedMapOptions options = LocalCachedMapOptions.defaults()
                 .evictionPolicy(EvictionPolicy.NONE)
                 .cacheSize(3)
@@ -971,5 +1062,26 @@ public class RedissonLocalCachedMapTest extends BaseMapTest {
         Assertions.assertEquals(1, map.size());
     }
 
+    @Test
+    public void testMerge() {
+        LocalCachedMapOptions<String, Integer> options = LocalCachedMapOptions.defaults();
+        options.loader(new MapLoader() {
+            @Override
+            public Object load(Object o) {
+                return null;
+            }
+
+            @Override
+            public Iterable loadAllKeys() {
+                return null;
+            }
+        });
+
+        RLocalCachedMap<String, Integer> localCachedMap = redisson.getLocalCachedMap("map", options);
+        localCachedMap.merge("c", 2, (x, y) -> x * y);
+
+        Integer counter = localCachedMap.get("c");
+        assertThat(counter).isEqualTo(2);
+    }
     
 }

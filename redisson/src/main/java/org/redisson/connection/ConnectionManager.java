@@ -21,7 +21,6 @@ import io.netty.util.TimerTask;
 import io.netty.util.concurrent.Future;
 import org.redisson.ElementsSubscribeService;
 import org.redisson.api.NodeType;
-import org.redisson.api.RFuture;
 import org.redisson.client.RedisClient;
 import org.redisson.client.RedisConnection;
 import org.redisson.client.RedisNodeNotFoundException;
@@ -35,6 +34,7 @@ import org.redisson.pubsub.PublishSubscribeService;
 
 import java.net.InetSocketAddress;
 import java.util.Collection;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 
@@ -46,6 +46,8 @@ import java.util.concurrent.TimeUnit;
 public interface ConnectionManager {
     
     RedisURI applyNatMap(RedisURI address);
+
+    CompletableFuture<RedisURI> resolveIP(RedisURI address);
     
     String getId();
     
@@ -89,9 +91,9 @@ public interface ConnectionManager {
 
     void releaseWrite(NodeSource source, RedisConnection connection);
 
-    RFuture<RedisConnection> connectionReadOp(NodeSource source, RedisCommand<?> command);
+    CompletableFuture<RedisConnection> connectionReadOp(NodeSource source, RedisCommand<?> command);
 
-    RFuture<RedisConnection> connectionWriteOp(NodeSource source, RedisCommand<?> command);
+    CompletableFuture<RedisConnection> connectionWriteOp(NodeSource source, RedisCommand<?> command);
 
     RedisClient createClient(NodeType type, RedisURI address, int timeout, int commandTimeout, String sslHostname);
 

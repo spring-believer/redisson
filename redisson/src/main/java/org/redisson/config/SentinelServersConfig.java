@@ -37,6 +37,8 @@ public class SentinelServersConfig extends BaseMasterSlaveServersConfig<Sentinel
 
     private String masterName;
 
+    private String sentinelUsername;
+
     private String sentinelPassword;
 
     /**
@@ -53,6 +55,8 @@ public class SentinelServersConfig extends BaseMasterSlaveServersConfig<Sentinel
 
     private boolean checkSlaveStatusWithSyncing = true;
 
+    private boolean sentinelsDiscovery = true;
+
     public SentinelServersConfig() {
     }
 
@@ -64,8 +68,10 @@ public class SentinelServersConfig extends BaseMasterSlaveServersConfig<Sentinel
         setScanInterval(config.getScanInterval());
         setNatMapper(config.getNatMapper());
         setCheckSentinelsList(config.isCheckSentinelsList());
+        setSentinelUsername(config.getSentinelUsername());
         setSentinelPassword(config.getSentinelPassword());
         setCheckSlaveStatusWithSyncing(config.isCheckSlaveStatusWithSyncing());
+        setSentinelsDiscovery(config.isSentinelsDiscovery());
     }
 
     /**
@@ -80,6 +86,21 @@ public class SentinelServersConfig extends BaseMasterSlaveServersConfig<Sentinel
     }
     public String getMasterName() {
         return masterName;
+    }
+
+    /**
+     * Username required by the Redis Sentinel servers for authentication.
+     *
+     * @param sentinelUsername of Redis
+     * @return config
+     */
+    public SentinelServersConfig setSentinelUsername(String sentinelUsername) {
+        this.sentinelUsername = sentinelUsername;
+        return this;
+    }
+
+    public String getSentinelUsername() {
+        return sentinelUsername;
     }
 
     /**
@@ -207,6 +228,23 @@ public class SentinelServersConfig extends BaseMasterSlaveServersConfig<Sentinel
      */
     public SentinelServersConfig setCheckSlaveStatusWithSyncing(boolean checkSlaveStatusWithSyncing) {
         this.checkSlaveStatusWithSyncing = checkSlaveStatusWithSyncing;
+        return this;
+    }
+
+    public boolean isSentinelsDiscovery() {
+        return sentinelsDiscovery;
+    }
+
+    /**
+     * Enables sentinels discovery.
+     * <p>
+     * Default is <code>true</code>
+     *
+     * @param sentinelsDiscovery - boolean value
+     * @return config
+     */
+    public SentinelServersConfig setSentinelsDiscovery(boolean sentinelsDiscovery) {
+        this.sentinelsDiscovery = sentinelsDiscovery;
         return this;
     }
 }

@@ -83,7 +83,7 @@ public class RedissonTest extends BaseTest {
         }
 
         ex.shutdown();
-        assertThat(ex.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(ex.awaitTermination(7, TimeUnit.SECONDS)).isTrue();
         inst.shutdown();
     }
 
@@ -420,21 +420,23 @@ public class RedissonTest extends BaseTest {
         int readonlyErrors = 0;
         
         for (RFuture<?> rFuture : futures) {
-            rFuture.awaitUninterruptibly();
-            if (!rFuture.isSuccess()) {
-                System.out.println("cause " + rFuture.cause());
-                if (rFuture.cause().getMessage().contains("READONLY You can't write against")) {
+            try {
+                rFuture.toCompletableFuture().join();
+                success++;
+            } catch (CompletionException e) {
+                if (e.getCause().getMessage().contains("READONLY You can't write against")) {
                     readonlyErrors++;
                 }
                 errors++;
-            } else {
-                success++;
+                // skip
             }
         }
         
         System.out.println("errors " + errors + " success " + success + " readonly " + readonlyErrors);
-        
-        assertThat(errors).isLessThan(800);
+
+        assertThat(futures.get(futures.size() - 1).isDone()).isTrue();
+        assertThat(futures.get(futures.size() - 1).toCompletableFuture().isCompletedExceptionally()).isFalse();
+        assertThat(errors).isLessThan(820);
         assertThat(readonlyErrors).isZero();
         
         redisson.shutdown();
@@ -549,8 +551,9 @@ public class RedissonTest extends BaseTest {
         assertThat(newMaster).isNotNull();
 
         for (RFuture<?> rFuture : futures) {
-            rFuture.awaitUninterruptibly();
-            if (!rFuture.isSuccess()) {
+            try {
+                rFuture.toCompletableFuture().join();
+            } catch (Exception e) {
                 Assertions.fail();
             }
         }
@@ -649,11 +652,11 @@ public class RedissonTest extends BaseTest {
         int readonlyErrors = 0;
         
         for (RFuture<?> rFuture : futures) {
-            rFuture.awaitUninterruptibly();
-            if (!rFuture.isSuccess()) {
-                errors++;
-            } else {
+            try {
+                rFuture.toCompletableFuture().join();
                 success++;
+            } catch (Exception e) {
+                errors++;
             }
         }
         
@@ -723,12 +726,13 @@ public class RedissonTest extends BaseTest {
         int readonlyErrors = 0;
 
         for (RFuture<?> rFuture : futures) {
-            rFuture.awaitUninterruptibly();
-            if (!rFuture.isSuccess()) {
-                rFuture.cause().printStackTrace();
-                errors++;
-            } else {
+            try {
+                rFuture.toCompletableFuture().join();
                 success++;
+            } catch (Exception e) {
+                e.printStackTrace();
+                errors++;
+                // skip
             }
         }
 
@@ -736,8 +740,10 @@ public class RedissonTest extends BaseTest {
         process.shutdown();
 
         assertThat(readonlyErrors).isZero();
-        assertThat(errors).isLessThan(130);
-        assertThat(success).isGreaterThan(600 - 130);
+        assertThat(errors).isLessThan(200);
+        assertThat(success).isGreaterThan(600 - 200);
+        assertThat(futures.get(futures.size() - 1).isDone()).isTrue();
+        assertThat(futures.get(futures.size() - 1).toCompletableFuture().isCompletedExceptionally()).isFalse();
     }
 
 
@@ -794,6 +800,26 @@ public class RedissonTest extends BaseTest {
         r.shutdown();
         Assertions.assertTrue(r.isShuttingDown());
         Assertions.assertTrue(r.isShutdown());
+    }
+
+    @Test
+    public void testURIPassword() throws InterruptedException, IOException {
+        RedisProcess runner = new RedisRunner()
+                .nosave()
+                .randomDir()
+                .randomPort()
+                .requirepass("1234")
+                .run();
+
+        Config config = new Config();
+        config.useSingleServer()
+              .setAddress("redis://:1234@" + runner.getRedisServerBindAddress() + ":" + runner.getRedisServerPort());
+        RedissonClient redisson = Redisson.create(config);
+        RBucket<String> b = redisson.getBucket("test");
+        b.set("123");
+
+        redisson.shutdown();
+        runner.stop();
     }
 
     @Test
@@ -1114,7 +1140,22 @@ public class RedissonTest extends BaseTest {
     public void testMasterSlaveConnectionFail() {
         Assertions.assertThrows(RedisConnectionException.class, () -> {
             Config config = new Config();
-            config.useMasterSlaveServers().setMasterAddress("redis://127.99.0.1:1111");
+            config.useMasterSlaveServers()
+                    .setMasterAddress("redis://127.99.0.1:1111")
+                    .addSlaveAddress("redis://127.99.0.2:1111");
+            Redisson.create(config);
+
+            Thread.sleep(1500);
+        });
+    }
+
+    @Test
+    public void testMasterSlaveConnectionFail2() {
+        Assertions.assertThrows(RedisConnectionException.class, () -> {
+            Config config = new Config();
+            config.useMasterSlaveServers()
+                    .setMasterAddress("redis://gadfgdfgdsfg:1111")
+                    .addSlaveAddress("redis://asdfasdfsdfaasdf:1111");
             Redisson.create(config);
 
             Thread.sleep(1500);

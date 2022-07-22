@@ -17,6 +17,7 @@ package org.redisson;
 
 import org.redisson.api.*;
 import org.redisson.client.codec.Codec;
+import org.redisson.codec.JsonCodec;
 import org.redisson.config.Config;
 import org.redisson.config.ConfigSupport;
 import org.redisson.connection.ConnectionManager;
@@ -25,6 +26,7 @@ import org.redisson.liveobject.core.RedissonObjectBuilder;
 import org.redisson.remote.ResponseEntry;
 import org.redisson.rx.*;
 
+import java.util.Arrays;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
@@ -145,7 +147,15 @@ public class RedissonRx implements RedissonRxClient {
         RedissonSpinLock spinLock = new RedissonSpinLock(commandExecutor, name, backOff);
         return RxProxyBuilder.create(commandExecutor, spinLock, RLockRx.class);
     }
-    
+
+    @Override
+    public RLockRx getMultiLock(RLockRx... locks) {
+        RLock[] ls = Arrays.stream(locks)
+                            .map(l -> new RedissonLock(commandExecutor, l.getName()))
+                            .toArray(RLock[]::new);
+        return RxProxyBuilder.create(commandExecutor, new RedissonMultiLock(ls), RLockRx.class);
+    }
+
     @Override
     public RLockRx getMultiLock(RLock... locks) {
         return RxProxyBuilder.create(commandExecutor, new RedissonMultiLock(locks), RLockRx.class);
@@ -193,6 +203,11 @@ public class RedissonRx implements RedissonRxClient {
     @Override
     public RBucketsRx getBuckets(Codec codec) {
         return RxProxyBuilder.create(commandExecutor, new RedissonBuckets(codec, commandExecutor), RBucketsRx.class);
+    }
+
+    @Override
+    public <V> RJsonBucketRx<V> getJsonBucket(String name, JsonCodec<V> codec) {
+        return RxProxyBuilder.create(commandExecutor, new RedissonJsonBucket<>(codec, commandExecutor, name), RJsonBucketRx.class);
     }
 
     @Override
@@ -327,6 +342,18 @@ public class RedissonRx implements RedissonRxClient {
         RedissonLexSortedSet set = new RedissonLexSortedSet(commandExecutor, name, null);
         return RxProxyBuilder.create(commandExecutor, set, 
                 new RedissonLexSortedSetRx(set), RLexSortedSetRx.class);
+    }
+
+    @Override
+    public RShardedTopicRx getShardedTopic(String name) {
+        RShardedTopic topic = new RedissonShardedTopic(commandExecutor, name);
+        return RxProxyBuilder.create(commandExecutor, topic, new RedissonTopicRx(topic), RShardedTopicRx.class);
+    }
+
+    @Override
+    public RShardedTopicRx getShardedTopic(String name, Codec codec) {
+        RShardedTopic topic = new RedissonShardedTopic(codec, commandExecutor, name);
+        return RxProxyBuilder.create(commandExecutor, topic, new RedissonTopicRx(topic), RShardedTopicRx.class);
     }
 
     @Override
@@ -479,6 +506,16 @@ public class RedissonRx implements RedissonRxClient {
     }
 
     @Override
+    public RFunctionRx getFunction() {
+        return RxProxyBuilder.create(commandExecutor, new RedissonFuction(commandExecutor), RFunctionRx.class);
+    }
+
+    @Override
+    public RFunctionRx getFunction(Codec codec) {
+        return RxProxyBuilder.create(commandExecutor, new RedissonFuction(commandExecutor, codec), RFunctionRx.class);
+    }
+
+    @Override
     public RScriptRx getScript() {
         return RxProxyBuilder.create(commandExecutor, new RedissonScript(commandExecutor), RScriptRx.class);
     }
@@ -523,6 +560,7 @@ public class RedissonRx implements RedissonRxClient {
 
     @Override
     public void shutdown() {
+        writeBehindService.stop();
         connectionManager.shutdown();
     }
 

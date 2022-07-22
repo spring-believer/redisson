@@ -72,8 +72,9 @@ abstract class EvictionTask implements Runnable {
         }
         
         RFuture<Integer> future = execute();
-        future.onComplete((size, e) -> {
+        future.whenComplete((size, e) -> {
             if (e != null) {
+                log.error("Unable to evict elements for '" + getName() + "'", e);
                 schedule();
                 return;
             }

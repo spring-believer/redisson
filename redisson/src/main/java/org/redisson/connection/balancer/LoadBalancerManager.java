@@ -15,16 +15,7 @@
  */
 package org.redisson.connection.balancer;
 
-import java.net.InetSocketAddress;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.BiConsumer;
-
 import org.redisson.api.NodeType;
-import org.redisson.api.RFuture;
 import org.redisson.client.RedisClient;
 import org.redisson.client.RedisConnection;
 import org.redisson.client.RedisConnectionException;
@@ -38,12 +29,15 @@ import org.redisson.connection.ConnectionManager;
 import org.redisson.connection.MasterSlaveEntry;
 import org.redisson.connection.pool.PubSubConnectionPool;
 import org.redisson.connection.pool.SlaveConnectionPool;
-import org.redisson.misc.CountableListener;
-import org.redisson.misc.RPromise;
 import org.redisson.misc.RedisURI;
-import org.redisson.misc.RedissonPromise;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.net.InetSocketAddress;
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 
@@ -54,9 +48,9 @@ public class LoadBalancerManager {
 
     private final Logger log = LoggerFactory.getLogger(getClass());
 
-    private final ConnectionManager connectionManager;
-    private final PubSubConnectionPool pubSubConnectionPool;
-    private final SlaveConnectionPool slaveConnectionPool;
+    protected final ConnectionManager connectionManager;
+    protected final PubSubConnectionPool pubSubConnectionPool;
+    protected final SlaveConnectionPool slaveConnectionPool;
     
     private final Map<RedisClient, ClientConnectionsEntry> client2Entry = new ConcurrentHashMap<>();
 
@@ -76,22 +70,14 @@ public class LoadBalancerManager {
         }
     }
 
-    public RFuture<Void> add(final ClientConnectionsEntry entry) {
-        RPromise<Void> result = new RedissonPromise<Void>();
-        
-        CountableListener<Void> listener = new CountableListener<Void>(result, null, 2) {
-            @Override
-            protected void onSuccess(Void value) {
-                client2Entry.put(entry.getClient(), entry);
-            }
-        };
+    public CompletableFuture<Void> add(ClientConnectionsEntry entry) {
+        CompletableFuture<Void> slaveFuture = slaveConnectionPool.add(entry);
+        CompletableFuture<Void> pubSubFuture = pubSubConnectionPool.add(entry);
 
-        RFuture<Void> slaveFuture = slaveConnectionPool.add(entry);
-        slaveFuture.onComplete(listener);
-        
-        RFuture<Void> pubSubFuture = pubSubConnectionPool.add(entry);
-        pubSubFuture.onComplete(listener);
-        return result;
+        CompletableFuture<Void> future = CompletableFuture.allOf(slaveFuture, pubSubFuture);
+        return future.thenAccept(r -> {
+            client2Entry.put(entry.getClient(), entry);
+        });
     }
 
     public Collection<ClientConnectionsEntry> getEntries() {
@@ -117,16 +103,38 @@ public class LoadBalancerManager {
     public boolean unfreeze(RedisURI address, FreezeReason freezeReason) {
         ClientConnectionsEntry entry = getEntry(address);
         if (entry == null) {
-            throw new IllegalStateException("Can't find " + address + " in slaves! Available slaves: " + client2Entry.keySet());
+            log.error("Can't find {} in slaves! Available slaves: {}", address, client2Entry.keySet());
+            return false;
         }
 
         return unfreeze(entry, freezeReason);
     }
-    
-    public boolean  unfreeze(InetSocketAddress address, FreezeReason freezeReason) {
+
+    public CompletableFuture<Boolean> unfreezeAsync(RedisURI address, FreezeReason freezeReason) {
         ClientConnectionsEntry entry = getEntry(address);
         if (entry == null) {
-            throw new IllegalStateException("Can't find " + address + " in slaves! Available slaves: " + client2Entry.keySet());
+            log.error("Can't find {} in slaves! Available slaves: {}", address, client2Entry.keySet());
+            return CompletableFuture.completedFuture(false);
+        }
+
+        return unfreezeAsync(entry, freezeReason);
+    }
+
+    public CompletableFuture<Boolean> unfreezeAsync(InetSocketAddress address, FreezeReason freezeReason) {
+        ClientConnectionsEntry entry = getEntry(address);
+        if (entry == null) {
+            log.error("Can't find {} in slaves! Available slaves: {}", address, client2Entry.keySet());
+            return CompletableFuture.completedFuture(false);
+        }
+
+        return unfreezeAsync(entry, freezeReason);
+    }
+
+    public boolean unfreeze(InetSocketAddress address, FreezeReason freezeReason) {
+        ClientConnectionsEntry entry = getEntry(address);
+        if (entry == null) {
+            log.error("Can't find {} in slaves! Available slaves: {}", address, client2Entry.keySet());
+            return false;
         }
 
         return unfreeze(entry, freezeReason);
@@ -142,35 +150,66 @@ public class LoadBalancerManager {
                     || entry.getFreezeReason() == FreezeReason.RECONNECT) {
                 if (!entry.isInitialized()) {
                     entry.setInitialized(true);
-                    CountableListener<Void> listener = new CountableListener<Void>() {
-                        @Override
-                        protected void onSuccess(Void value) {
-                            entry.setFreezeReason(null);
-                        }
-                    };
-                    listener.setCounter(2);
-                    BiConsumer<Void, Throwable> initCallBack = new BiConsumer<Void, Throwable>() {
-                        private AtomicBoolean initConnError = new AtomicBoolean(false);
-                        @Override
-                        public void accept(Void r, Throwable ex) {
-                            if (ex == null) {
-                                listener.decCounter();
-                            } else {
-                                if (!initConnError.compareAndSet(false, true)) {
-                                    return;
-                                }
-                                entry.setInitialized(false);
-                            }
-                        }
-                    };
+
                     entry.resetFirstFail();
-                    slaveConnectionPool.initConnections(entry).onComplete(initCallBack);
-                    pubSubConnectionPool.initConnections(entry).onComplete(initCallBack);
+
+                    List<CompletableFuture<Void>> futures = new ArrayList<>(2);
+                    futures.add(slaveConnectionPool.initConnections(entry));
+                    futures.add(pubSubConnectionPool.initConnections(entry));
+
+                    CompletableFuture<Void> future = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
+                    future.whenComplete((r, e) -> {
+                        if (e != null) {
+                            log.error("Unable to unfreeze entry: " + entry, e);
+                            entry.setInitialized(false);
+                            connectionManager.newTimeout(t -> {
+                                unfreeze(entry, freezeReason);
+                            }, 1, TimeUnit.SECONDS);
+                            return;
+                        }
+
+                        log.debug("Unfreezed entry: {}", entry);
+                        entry.setFreezeReason(null);
+                    });
                     return true;
                 }
             }
         }
         return false;
+    }
+
+    public CompletableFuture<Boolean> unfreezeAsync(ClientConnectionsEntry entry, FreezeReason freezeReason) {
+        synchronized (entry) {
+            if (!entry.isFreezed()) {
+                return CompletableFuture.completedFuture(false);
+            }
+
+            if (freezeReason != FreezeReason.RECONNECT
+                    || entry.getFreezeReason() == FreezeReason.RECONNECT) {
+                if (!entry.isInitialized()) {
+                    entry.setInitialized(true);
+
+                    entry.resetFirstFail();
+
+                    List<CompletableFuture<Void>> futures = new ArrayList<>(2);
+                    futures.add(slaveConnectionPool.initConnections(entry));
+                    futures.add(pubSubConnectionPool.initConnections(entry));
+
+                    CompletableFuture<Void> future = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
+                    return future.whenComplete((r, e) -> {
+                        if (e != null) {
+                            log.error("Unable to unfreeze entry: " + entry, e);
+                            entry.setInitialized(false);
+                            return;
+                        }
+
+                        log.debug("Unfreezed entry: {}", entry);
+                        entry.setFreezeReason(null);
+                    }).thenApply(e -> true);
+                }
+            }
+        }
+        return CompletableFuture.completedFuture(false);
     }
 
     public ClientConnectionsEntry freeze(RedisURI address, FreezeReason freezeReason) {
@@ -210,7 +249,7 @@ public class LoadBalancerManager {
         return connectionEntry;
     }
 
-    public RFuture<RedisPubSubConnection> nextPubSubConnection() {
+    public CompletableFuture<RedisPubSubConnection> nextPubSubConnection() {
         return pubSubConnectionPool.get();
     }
 
@@ -218,11 +257,6 @@ public class LoadBalancerManager {
         return getEntry(addr) != null;
     }
 
-    public boolean isUnfreezed(RedisURI addr) {
-        ClientConnectionsEntry entry = getEntry(addr);
-        return !entry.isFreezed();
-    }
-    
     public boolean contains(RedisURI addr) {
         return getEntry(addr) != null;
     }
@@ -231,7 +265,7 @@ public class LoadBalancerManager {
         return getEntry(redisClient) != null;
     }
 
-    private ClientConnectionsEntry getEntry(RedisURI addr) {
+    public ClientConnectionsEntry getEntry(RedisURI addr) {
         for (ClientConnectionsEntry entry : client2Entry.values()) {
             InetSocketAddress entryAddr = entry.getClient().getAddr();
             if (RedisURI.compare(entryAddr, addr)) {
@@ -255,25 +289,29 @@ public class LoadBalancerManager {
         return client2Entry.get(redisClient);
     }
 
-    public RFuture<RedisConnection> getConnection(RedisCommand<?> command, RedisURI addr) {
+    public CompletableFuture<RedisConnection> getConnection(RedisCommand<?> command, RedisURI addr) {
         ClientConnectionsEntry entry = getEntry(addr);
         if (entry != null) {
             return slaveConnectionPool.get(command, entry);
         }
         RedisConnectionException exception = new RedisConnectionException("Can't find entry for " + addr);
-        return RedissonPromise.newFailedFuture(exception);
+        CompletableFuture<RedisConnection> f = new CompletableFuture<>();
+        f.completeExceptionally(exception);
+        return f;
     }
     
-    public RFuture<RedisConnection> getConnection(RedisCommand<?> command, RedisClient client) {
+    public CompletableFuture<RedisConnection> getConnection(RedisCommand<?> command, RedisClient client) {
         ClientConnectionsEntry entry = getEntry(client);
         if (entry != null) {
             return slaveConnectionPool.get(command, entry);
         }
         RedisConnectionException exception = new RedisConnectionException("Can't find entry for " + client);
-        return RedissonPromise.newFailedFuture(exception);
+        CompletableFuture<RedisConnection> f = new CompletableFuture<>();
+        f.completeExceptionally(exception);
+        return f;
     }
 
-    public RFuture<RedisConnection> nextConnection(RedisCommand<?> command) {
+    public CompletableFuture<RedisConnection> nextConnection(RedisCommand<?> command) {
         return slaveConnectionPool.get(command);
     }
 
@@ -287,16 +325,16 @@ public class LoadBalancerManager {
         slaveConnectionPool.returnConnection(entry, connection);
     }
 
-    public RFuture<Void> shutdownAsync() {
+    public CompletableFuture<Void> shutdownAsync() {
         if (client2Entry.values().isEmpty()) {
-            return RedissonPromise.<Void>newSucceededFuture(null);
+            return CompletableFuture.completedFuture(null);
         }
-        RPromise<Void> result = new RedissonPromise<Void>();
-        CountableListener<Void> listener = new CountableListener<Void>(result, null, client2Entry.values().size());
+
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
         for (ClientConnectionsEntry entry : client2Entry.values()) {
-            entry.shutdownAsync().onComplete(listener);
+            futures.add(entry.shutdownAsync());
         }
-        return result;
+        return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
     }
 
 }

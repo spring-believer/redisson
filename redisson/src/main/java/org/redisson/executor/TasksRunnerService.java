@@ -17,8 +17,6 @@ package org.redisson.executor;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
-import io.netty.util.Timeout;
-import io.netty.util.TimerTask;
 import org.redisson.RedissonExecutorService;
 import org.redisson.RedissonShutdownException;
 import org.redisson.api.RFuture;
@@ -36,19 +34,18 @@ import org.redisson.executor.params.*;
 import org.redisson.misc.Hash;
 import org.redisson.misc.HashValue;
 import org.redisson.misc.Injector;
-import org.redisson.remote.RequestId;
 import org.redisson.remote.ResponseEntry;
-import org.springframework.beans.factory.BeanFactory;
-import org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor;
 
 import java.io.ByteArrayInputStream;
 import java.io.ObjectInput;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.Arrays;
-import java.util.Date;
 import java.util.Map;
-import java.util.TimeZone;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -76,7 +73,7 @@ public class TasksRunnerService implements RemoteExecutorService {
     private String tasksRetryIntervalName;
     private String tasksExpirationTimeName;
 
-    private BeanFactory beanFactory;
+    private TasksInjector tasksInjector;
     private ConcurrentMap<String, ResponseEntry> responses;
     
     public TasksRunnerService(CommandAsyncExecutor commandExecutor, RedissonClient redisson, Codec codec, String name, ConcurrentMap<String, ResponseEntry> responses) {
@@ -87,9 +84,9 @@ public class TasksRunnerService implements RemoteExecutorService {
         
         this.codec = codec;
     }
-    
-    public void setBeanFactory(BeanFactory beanFactory) {
-        this.beanFactory = beanFactory;
+
+    public void setTasksInjector(TasksInjector tasksInjector) {
+        this.tasksInjector = tasksInjector;
     }
 
     public void setTasksExpirationTimeName(String tasksExpirationTimeName) {
@@ -141,12 +138,12 @@ public class TasksRunnerService implements RemoteExecutorService {
     @Override
     public void schedule(ScheduledCronExpressionParameters params) {
         CronExpression expression = new CronExpression(params.getCronExpression());
-        expression.setTimeZone(TimeZone.getTimeZone(params.getTimezone()));
-        Date nextStartDate = expression.getNextValidTimeAfter(new Date());
+        ZonedDateTime currentDate = ZonedDateTime.of(LocalDateTime.now(), ZoneId.of(params.getTimezone()));
+        ZonedDateTime nextStartDate = expression.nextTimeAfter(currentDate);
         RFuture<Void> future = null;
         if (nextStartDate != null) {
             RemoteExecutorServiceAsync service = asyncScheduledServiceAtFixed(params.getExecutorId(), params.getRequestId());
-            params.setStartTime(nextStartDate.getTime());
+            params.setStartTime(nextStartDate.toInstant().toEpochMilli());
             future = service.schedule(params);
         }
         try {
@@ -174,7 +171,7 @@ public class TasksRunnerService implements RemoteExecutorService {
         scheduledRemoteService.setSchedulerQueueName(schedulerQueueName);
         scheduledRemoteService.setSchedulerChannelName(schedulerChannelName);
         scheduledRemoteService.setTasksName(tasksName);
-        scheduledRemoteService.setRequestId(new RequestId(requestId));
+        scheduledRemoteService.setRequestId(requestId);
         scheduledRemoteService.setTasksExpirationTimeName(tasksExpirationTimeName);
         scheduledRemoteService.setTasksRetryIntervalName(tasksRetryIntervalName);
         RemoteExecutorServiceAsync asyncScheduledServiceAtFixed = scheduledRemoteService.get(RemoteExecutorServiceAsync.class, RemoteInvocationOptions.defaults().noAck().noResult());
@@ -208,7 +205,7 @@ public class TasksRunnerService implements RemoteExecutorService {
         Object res;
         try {
             RFuture<Long> future = renewRetryTime(params.getRequestId());
-            future.sync();
+            future.toCompletableFuture().get();
 
             Callable<?> callable = decode(params);
             res = callable.call();
@@ -217,6 +214,13 @@ public class TasksRunnerService implements RemoteExecutorService {
         } catch (RedisException e) {
             finish(params.getRequestId(), true);
             throw e;
+        } catch (ExecutionException e) {
+            finish(params.getRequestId(), true);
+            if (e.getCause() instanceof RuntimeException) {
+                throw (RuntimeException) e.getCause();
+            } else {
+                throw new IllegalArgumentException(e.getCause());
+            }
         } catch (Exception e) {
             finish(params.getRequestId(), true);
             throw new IllegalArgumentException(e);
@@ -230,12 +234,8 @@ public class TasksRunnerService implements RemoteExecutorService {
             return;
         }
 
-        commandExecutor.getConnectionManager().newTimeout(new TimerTask() {
-            @Override
-            public void run(Timeout timeout) throws Exception {
-                renewRetryTime(requestId);
-            }
-        }, Math.max(1000, retryInterval / 2), TimeUnit.MILLISECONDS);
+        commandExecutor.getConnectionManager().newTimeout(timeout -> renewRetryTime(requestId),
+                                                    Math.max(1000, retryInterval / 2), TimeUnit.MILLISECONDS);
     }
 
     protected RFuture<Long> renewRetryTime(String requestId) {
@@ -262,9 +262,9 @@ public class TasksRunnerService implements RemoteExecutorService {
                     + "return retryInterval; "
                 + "end;"
                 + "return nil;", 
-                Arrays.<Object>asList(statusName, schedulerQueueName, schedulerChannelName, tasksRetryIntervalName, tasksName),
+                Arrays.asList(statusName, schedulerQueueName, schedulerChannelName, tasksRetryIntervalName, tasksName),
                 System.currentTimeMillis(), requestId);
-        future.onComplete((res, e) -> {
+        future.whenComplete((res, e) -> {
             if (e != null) {
                 scheduleRetryTimeRenewal(requestId, 10000L);
                 return;
@@ -314,10 +314,8 @@ public class TasksRunnerService implements RemoteExecutorService {
             Injector.inject(task, RedissonClient.class, redisson);
             Injector.inject(task, String.class, params.getRequestId());
             
-            if (beanFactory != null) {
-                AutowiredAnnotationBeanPostProcessor bpp = new AutowiredAnnotationBeanPostProcessor();
-                bpp.setBeanFactory(beanFactory);
-                bpp.processInjection(task);
+            if (tasksInjector != null) {
+                tasksInjector.inject(task);
             }
             
             return task;
@@ -331,10 +329,10 @@ public class TasksRunnerService implements RemoteExecutorService {
 
     public void executeRunnable(TaskParameters params, boolean removeTask) {
         try {
-            if (params.getRequestId() != null && params.getRequestId().startsWith("00")) {
+            if (params.getRequestId() != null && !(params instanceof ScheduledParameters)) {
                 RFuture<Long> future = renewRetryTime(params.getRequestId());
                 try {
-                    future.sync();
+                    future.toCompletableFuture().get();
                 } catch (InterruptedException ex) {
                     Thread.currentThread().interrupt();
                 }
@@ -347,7 +345,14 @@ public class TasksRunnerService implements RemoteExecutorService {
         } catch (RedisException e) {
             finish(params.getRequestId(), removeTask);
             throw e;
+        } catch (ExecutionException e) {
+            if (e.getCause() instanceof RuntimeException) {
+                throw (RuntimeException) e.getCause();
+            } else {
+                throw new IllegalArgumentException(e.getCause());
+            }
         }
+
         finish(params.getRequestId(), removeTask);
     }
     
@@ -388,7 +393,7 @@ public class TasksRunnerService implements RemoteExecutorService {
                     + "end;"
                 + "end;";  
 
-        RFuture<Object> f = commandExecutor.evalWriteAsync(name, StringCodec.INSTANCE, RedisCommands.EVAL_VOID,
+        RFuture<Object> f = commandExecutor.evalWriteNoRetryAsync(name, StringCodec.INSTANCE, RedisCommands.EVAL_VOID,
                 script,
                 Arrays.asList(tasksCounterName, statusName, terminationTopicName, tasksName, schedulerQueueName, tasksRetryIntervalName),
                 RedissonExecutorService.SHUTDOWN_STATE, RedissonExecutorService.TERMINATED_STATE, requestId);
